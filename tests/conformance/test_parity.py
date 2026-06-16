@@ -1,14 +1,14 @@
 """Parity harness: SDK schema constants vs the frozen CLI trace model.
 
-Phase 0 placeholder round-trip — hand-built dicts stand in for SDK-emitted output (Phase 1
-replaces them with the real serializer). Doubles as a drift guard: the frozen ``schema.py``
-field set must match the vendored CLI model field-for-field, so a CLI contract change that
-isn't mirrored here fails the build.
+Drift guard: the frozen ``schema.py`` field set must match the vendored CLI model
+field-for-field, so a CLI contract change that isn't mirrored here fails the build. The
+real-serializer round-trip lives in ``test_serialize_parity.py`` (Phase 1 replaced the Phase 0
+hand-built placeholder); the shared ``_event`` builder below still backs the guardrail-verdict
+and envelope (D-5b) checks.
 """
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import pytest
@@ -67,39 +67,6 @@ def _event(event_type: str, seq: int) -> dict[str, Any]:
     }
     payload.update(_EXTRA[event_type])
     return payload
-
-
-# --- placeholder round-trip (Phase 1 swaps hand-built dicts for SDK output) ---
-
-
-@pytest.mark.parametrize("event_type", schema.EVENT_TYPES)
-def test_each_event_type_validates(event_type: str) -> None:
-    event = TraceEventAdapter.validate_python(_event(event_type, 0))
-    assert event.type == event_type
-
-
-def test_full_agenttrace_round_trips() -> None:
-    payload = {
-        "run_id": "r1",
-        "prompt_id": "p1",
-        "example_id": "e1",
-        "role": "source",
-        "events": [
-            _event("model_call", 0),
-            _event("tool_call", 1),
-            _event("tool_result", 2),
-            _event("final_output", 3),
-        ],
-    }
-    trace = AgentTrace.model_validate(payload)
-    reloaded = AgentTrace.model_validate(json.loads(trace.model_dump_json()))
-    assert reloaded == trace
-    assert [event.type for event in reloaded.events] == [
-        "model_call",
-        "tool_call",
-        "tool_result",
-        "final_output",
-    ]
 
 
 # --- drift guard: schema.py constants vs the vendored CLI model ---

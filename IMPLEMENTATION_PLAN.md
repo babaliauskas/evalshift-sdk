@@ -6,10 +6,10 @@ Sub-phased, resumable. Tackle one phase at a time. Update the **Status** column 
 | Phase | Title | Status |
 |-------|-------|--------|
 | 0 | Repo scaffold + schema freeze | ☑ done |
-| 1 | Trace model + serialization | ☐ not started |
-| 2 | Capture core (sync) + off-by-default gate | ☐ not started |
-| 3 | Sinks + config + env robustness | ☐ not started |
-| 4 | Redaction at capture | ☐ not started |
+| 1 | Trace model + serialization | ☑ done |
+| 2 | Capture core (sync) + off-by-default gate | ☑ done |
+| 3 | Sinks + config + env robustness | ☑ done |
+| 4 | Redaction at capture | ☑ done |
 | 5 | Async + streaming + concurrency | ☐ not started |
 | 6 | Hygiene + fail-open hardening | ☐ not started |
 | 7 | Framework adapters | ☐ not started |
@@ -18,6 +18,9 @@ Sub-phased, resumable. Tackle one phase at a time. Update the **Status** column 
 | 10 | End-to-end demo + docs | ☐ not started |
 
 Legend: ☐ not started · ◐ in progress · ☑ done
+
+**Last verified 2026-06-16:** Phases 0–4 confirmed complete — 139 tests pass,
+`mypy --strict` + `ruff` + `ruff format --check` clean. Phase 5 not started (next up).
 
 ---
 
@@ -147,41 +150,73 @@ def handle_ticket(query): ...
 **Goal:** turn a span tree into a CLI-valid `AgentTrace` + capture file with tool-result fixtures.
 - 1.1 `trace/models.py` — event dataclasses (`ModelCallEvent`, `ToolCallEvent`, `ToolResultEvent`,
   …) matching CLI field names/types exactly; plus capture envelope (`capture_id`, `suite`,
-  `input_hash`, `code_version`, `schema_version`, `created_at`).
-- 1.2 `capture/span.py` — `Span`/`SpanTree`: parent links, start/end ts, monotonic order.
+  `input_hash`, `code_version`, `schema_version`, `created_at`). ☑ (stdlib dataclasses; `to_jsonable`)
+- 1.2 `capture/span.py` — `Span`/`SpanTree`: parent links, start/end ts, monotonic order. ☑
 - 1.3 `trace/serialize.py` — SpanTree → ordered `events[]` (stable `sequence_index`) + concurrency
   metadata; emit `cap_<id>.json`; **store each `tool_result` keyed by `call_id`+input hash** as
-  the replay fixture (D-1).
-- **Verify:** unit tests — field-name parity vs CLI; ordering deterministic; concurrent spans
+  the replay fixture (D-1). ☑ (pure — disk write deferred to Phase 2 FileSink)
+- **Verify:** ☑ unit tests — field-name parity vs CLI; ordering deterministic; concurrent spans
   serialize without `sequence_index` collisions; fixture lookup table present.
+  `ruff`/`format`/`mypy --strict`/`pytest` all green (46 tests). Design notes:
+  tool-result fixtures live **inside the trace** (frozen `ENVELOPE_KEYS` has no `fixtures` slot —
+  "capture doubles as fixture"); concurrency timing lives in `event.metadata["evalshift"]` (the
+  only home surviving the CLI's `extra="forbid"` events); capture identity derives from the
+  capture (`role=source`, `prompt_id=suite`, `run_id=example_id=capture_id`), rewritten on promote.
 
 ### Phase 2 — Capture core (sync) + off-by-default gate
 **Goal:** `@capture.agent` (sync) records tools + model calls → writes one capture file.
 - 2.1 `capture/state.py` contextvars current span; `capture/api.py` sync decorator + context
-  manager + `capture.tool` / `record_model_call` helpers.
-- 2.2 Wire to FileSink (basic) → one `cap_<id>.json` per invocation.
+  manager + `capture.tool` / `record_model_call` helpers. ☑ (two `ContextVar`s — current
+  `SpanTree` + current parent `call_id`; push/pop via reset tokens, async-safe for Phase 5;
+  `_bind` uses `inspect.signature(...).bind().apply_defaults()` with a safe fallback)
+- 2.2 Wire to FileSink (basic) → one `cap_<id>.json` per invocation. ☑ (`sinks/file.py`;
+  `<base>/captures/<suite>/cap_<id>.json`, base = explicit > `EVALSHIFT_DIR` > `.evalshift`,
+  no repo-root walk; routed via `config.active_sink()` seam — Phase 3 swaps the body only)
 - 2.3 `config.py` + `EVALSHIFT_CAPTURE` gate — **off by default**, zero files in normal dev runs
-  (problem #10); basic `safety.py` guard wrapping entrypoints.
-- **Verify:** fake agent w/ 2 tools + 1 model call → capture file written + schema-valid; gate off
-  → nothing written; nested tool calls parented correctly.
+  (problem #10); basic `safety.py` guard wrapping entrypoints. ☑ (gate read live, truthy
+  allow-list; `safety.fail_open`/`guard` swallow-and-log at debug — wraps **only** bookkeeping,
+  never the user fn)
+- **Verify:** ☑ gate off → zero files; gate on → one schema-valid `cap_*.json`; nested tool
+  parentage; model call recorded; user exception **propagates** + capture-with-`error`-event
+  still written (D-2.3 choice); sink/build/open faults never break host; `redact=` accepted +
+  stored (applied Phase 4). `ruff`/`format`/`mypy --strict`/`pytest` all green (109 tests).
+  Decision: on user exception, record `error` event + still write the (partial) capture, then
+  bare `raise` — failed runs are the highest-value telemetry.
 
 ### Phase 3 — Sinks + config + environment robustness (problem #5)
 **Goal:** SDK works in containers/Lambda/read-only FS without assuming a repo.
-- 3.1 `sinks/base.py`, `sinks/file.py` (path resolution: explicit > `EVALSHIFT_DIR` env > default;
-  **no repo-root walk**), `sinks/memory.py` (user flushes).
-- 3.2 `configure(sink=…, redact=…, sample_rate=…, dedup=…)` programmatic API; optional
-  `evalshift.yaml`/`~/.evalshift/config.toml` read (never required).
-- **Verify:** path resolution precedence; MemorySink flush returns captured traces; read-only /
-  missing dir → no crash, degrades to no-op or memory.
+- 3.1 `sinks/base.py` (`Sink` `Protocol`, `runtime_checkable`, `write -> Path | None`),
+  `sinks/file.py` (path resolution explicit > `EVALSHIFT_DIR` > default, **no repo-root walk**;
+  now: `OSError` → drop + debug-log + return `None`; `_safe_segment` sanitizes `suite` vs
+  traversal), `sinks/memory.py` (`MemorySink`: `flush()` drains, `captures` non-draining view). ☑
+- 3.2 `configure(sink=…, redact=…, sample_rate=…, dedup=…)` programmatic API (merge semantics,
+  `_UNSET` sentinel; only `sink` wired — `redact`/`sample_rate`/`dedup` stored placeholders for
+  Phase 4/6) + `reset_config()`; `active_sink() -> Sink` swap seam (config-body-only change,
+  `_finalize` untouched). Config-file read (`evalshift.yaml`/`config.toml`) **deferred** —
+  stdlib-only/py3.10 floor; becomes an optional extra later. ☑
+- **Verify:** ☑ path-resolution precedence; both sinks satisfy `Sink`; MemorySink flush returns
+  then clears; suite traversal stays under `<base>/captures`; read-only FS → no crash, no file,
+  one debug line, capture dropped; `configure(sink=MemorySink())` routes capture to memory with
+  zero disk writes; autouse conftest fixture isolates global config. 121 tests pass; `ruff` /
+  `ruff format --check` / `mypy --strict` clean.
+  Decisions (confirmed this session): degradation = **no-op drop + debug log** (no silent
+  memory fallback — unbounded in long-lived hosts); config-file reading **deferred**.
 
 ### Phase 4 — Redaction at capture time (problem #3)
 **Goal:** PII masked in-process before any disk write.
-- 4.1 `redaction/base.py` protocol; `redaction/defaults.py` (emails, API keys, common PII).
-- 4.2 `redact=` hook applied to tool args, tool results, model input/output **before** serialize.
-- 4.3 Document the data boundary (what a written/promoted/uploaded artifact may still contain) in
-  `docs/REDACTION.md`.
-- **Verify:** default + custom redactor mask before write; redactor never sees post-disk data;
-  redactor exception is swallowed (fail-open) without dropping the user agent.
+- 4.1 `redaction/base.py` (`Redactor` `Protocol` + `redact_tree` walker); `redaction/defaults.py`
+  (`default_redactor`: emails, `sk-`/`Bearer`/AWS keys, recursive over dict/list/tuple). ☑
+- 4.2 `redact=` hook applied to tool args/results, model input/output (+ retrieval/guardrail/
+  final_output/error fields) **before** serialize — inside `build_capture`, so the tool
+  `input_hash` derives from redacted args. Threaded decorator→`_run_agent`→`_finalize`; precedence
+  decorator `redact=` > `configure(redact=)` (`config.active_redactor()`). ☑
+- 4.3 `docs/REDACTION.md` — data boundary documented (payloads masked; structure + envelope +
+  one-way `input_hash` retained); `DECISIONS.md` D-4 marked implemented + D-4a/D-4b added. ☑
+- **Verify:** ☑ default + custom redactor mask before write; global vs decorator precedence;
+  no-redactor → verbatim; `input_hash` from redacted args; **redactor exception → capture dropped
+  (fail-closed, D-4a) while host agent still returns**. `ruff`/`format`/`mypy --strict`/`pytest`
+  all green (139 tests). Decisions: **fail-closed drop** on redactor error (not fail-open-data);
+  redaction **opt-in** (`default_redactor` shipped but never auto-runs).
 
 ### Phase 5 — Async + streaming + concurrency (problem #6)
 **Goal:** real agents: async, token streaming, concurrent tool calls.

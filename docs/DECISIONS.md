@@ -42,8 +42,10 @@ calls, serialized down to the CLI's ordered `events[]` with a stable `sequence_i
 preserved concurrency metadata. *Implemented in Phases 1 and 5.*
 
 ### 4. Redaction boundary
-Redact **at capture, in-process, before any byte hits disk**. The data boundary (what a written
-capture / promoted golden may still contain) is documented in Phase 4 (`docs/REDACTION.md`).
+Redact **at capture, in-process, before any byte hits disk**. *Implemented in Phase 4* — payloads
+are masked in `build_capture` **before** serialization, so trace events and the derived tool
+`input_hash` see only redacted values. The data boundary (what a written capture / promoted golden
+may still contain) is documented in `docs/REDACTION.md`. See D-4a / D-4b for the policy choices.
 
 ### 5. Trace `schema_version`
 SDK trace schema is versioned independently of the CLI artifact version; `SCHEMA_VERSION = "1.0.0"`
@@ -78,6 +80,31 @@ the CLI contract.
   `test_schema_version_inside_trace_is_rejected` in `tests/conformance/test_parity.py`.
 - **Alternative rejected:** stashing the version inside an event's `metadata` dict — technically
   CLI-valid but couples the version to event payloads.
+
+## Phase-4 implementation decisions (confirmed this session)
+
+### D-4a — fail-closed on redactor error (drop the capture)
+If the user's redactor raises mid-capture, the **capture is dropped** (no file written) and a
+debug line is logged; the host agent is unaffected (it has already returned).
+
+- **Why:** a redactor crash could otherwise leave a partially- or un-redacted payload on disk —
+  the worst outcome for a PII-masking feature. Fail-open is sacred *for the host*, but the data
+  must fail **closed**. We never trade a possibly-leaked file for one more telemetry sample.
+- **How:** redaction runs inside `build_capture`, which `_finalize` already wraps in
+  `safety.guard("build capture", ...)`. A raising redactor propagates to that guard → `None`
+  envelope → no write. `redact_tree` deliberately holds no `try`/`except` of its own.
+- **Verified by:** `test_redactor_failure_drops_capture_but_host_returns` in
+  `tests/test_capture_redaction.py`.
+
+### D-4b — redaction is opt-in, not on-by-default
+`default_redactor` (emails / API keys) is shipped as a ready-made callable users pass explicitly
+(`@capture.agent(redact=default_redactor)` or `configure(redact=default_redactor)`). It does **not**
+auto-run; with no `redact=` set, payloads are captured verbatim (unchanged from Phases 2–3).
+
+- **Why:** auto-masking silently mutates captured data (corrupting goldens the user wanted
+  verbatim) and gives a false sense of security via inevitably-incomplete default patterns.
+  Opt-in keeps the masking decision explicit and auditable.
+- **Precedence:** a decorator-level `redact=` overrides any process-wide `configure(redact=...)`.
 
 ## Open follow-ups (not blocking v1)
 - **D1-followup:** unify packaging so CLI + SDK co-install cleanly (CLI-depends-on-SDK, or a single
