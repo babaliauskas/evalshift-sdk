@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Environments / tooling caches
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+uv.lock
+
+# Capture output (the SDK writes here at runtime)
+.evalshift/
+
+# OS / editor
+.DS_Store
