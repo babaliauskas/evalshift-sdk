@@ -10,7 +10,7 @@ Sub-phased, resumable. Tackle one phase at a time. Update the **Status** column 
 | 2 | Capture core (sync) + off-by-default gate | ☑ done |
 | 3 | Sinks + config + env robustness | ☑ done |
 | 4 | Redaction at capture | ☑ done |
-| 5 | Async + streaming + concurrency | ☐ not started |
+| 5 | Async + streaming + concurrency | ☑ done |
 | 6 | Hygiene + fail-open hardening | ☐ not started |
 | 7 | Framework adapters | ☐ not started |
 | 8 | Schema versioning + migration | ☐ not started |
@@ -19,8 +19,8 @@ Sub-phased, resumable. Tackle one phase at a time. Update the **Status** column 
 
 Legend: ☐ not started · ◐ in progress · ☑ done
 
-**Last verified 2026-06-16:** Phases 0–4 confirmed complete — 139 tests pass,
-`mypy --strict` + `ruff` + `ruff format --check` clean. Phase 5 not started (next up).
+**Last verified 2026-06-16:** Phases 0–5 confirmed complete — 165 tests pass,
+`mypy --strict` + `ruff` + `ruff format --check` clean. Phase 6 not started (next up).
 
 ---
 
@@ -220,12 +220,28 @@ def handle_ticket(query): ...
 
 ### Phase 5 — Async + streaming + concurrency (problem #6)
 **Goal:** real agents: async, token streaming, concurrent tool calls.
-- 5.1 Async-aware decorator + context manager; contextvars propagate across `await`.
-- 5.2 Streaming model-call capture (accumulate, record final text + usage on completion).
+- 5.1 Async-aware decorator + context manager; contextvars propagate across `await`. ☑
+  (`@capture.agent`/`@capture.tool` auto-detect coroutine fns via `inspect.iscoroutinefunction`
+  → async wrapper over `_run_agent_async`/`_run_tool_async`; `agent_session_async`
+  `@asynccontextmanager`. `state.py` reused **unchanged** — the keystone.)
+- 5.2 Streaming model-call capture (accumulate, record final text + usage on completion). ☑
+  (new `capture.model_call(model_id=, input=)` → `_ModelCallRecorder`, dual-protocol
+  `with`/`async with`; `add_text`/`set_usage`; opens span on enter, records once on exit;
+  `record_model_call` unchanged for atomic calls.)
 - 5.3 Concurrent tool calls (`asyncio.gather`) recorded with correct parentage/ordering in the
-  span tree.
-- **Verify:** async agent; `gather` of 3 tools → all recorded, ordering stable, no contextvar
-  bleed across tasks; streamed completion captured once.
+  span tree. ☑ (correct gather parentage comes free from contextvars copy-on-task-creation;
+  added `threading.Lock` to `SpanTree` order-assign/append + `MemorySink` so threaded tools via
+  `asyncio.to_thread`/`run_in_executor` can't race `_counter`.)
+- **Verify:** ☑ async agent → one schema-valid capture; `gather` of 3 tools → all recorded,
+  siblings `parent_call_id` null, `sequence_index` dense/no collisions; nested gather parentage;
+  no contextvar bleed across tasks; streamed completion captured once (output accumulated, usage
+  stored, omitted-usage derives latency); async exception → error event + partial capture +
+  propagate; thread-safety smoke (64-thread SpanTree unique orders, 100-write MemorySink).
+  `ruff`/`format`/`mypy --strict`/`pytest` all green (165 tests). Dev-dep `pytest-asyncio` +
+  `asyncio_mode="auto"` added; runtime stays stdlib-only. Decisions: auto-detect decorators;
+  new `model_call` recorder for streaming; locks for threaded-tool safety. Limitation documented:
+  raw `threading.Thread` tools (not via `to_thread`/`run_in_executor`) start a fresh contextvars
+  context → `current_tree()` is `None` → silently uncaptured.
 
 ### Phase 6 — Hygiene + fail-open hardening (problems #4, #10)
 **Goal:** firehose self-manages; SDK can never break the host agent.

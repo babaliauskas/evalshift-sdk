@@ -40,6 +40,7 @@ Issues = "https://github.com/babaliauskas/evalshift-sdk/issues"
 # never at runtime. `typing_extensions` lets the vendored CLI model run on py3.10.
 dev = [
     "pytest>=8.0",
+    "pytest-asyncio>=0.23",
     "mypy>=1.10",
     "ruff>=0.5",
     "pydantic>=2.5",
@@ -73,3 +74,6 @@ disallow_untyped_decorators = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["-ra", "--strict-markers", "--strict-config"]
+# Async tests (Phase 5) run without per-test @pytest.mark.asyncio; the plugin self-registers
+# the `asyncio` marker so --strict-markers stays satisfied.
+asyncio_mode = "auto"

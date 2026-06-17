@@ -19,9 +19,9 @@ import functools
 import inspect
 import time
 import uuid
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager, nullcontext
-from typing import Any, ParamSpec, TypeVar, overload
+from collections.abc import AsyncIterator, Callable, Iterator
+from contextlib import asynccontextmanager, contextmanager, nullcontext
+from typing import Any, ParamSpec, TypeVar, cast, overload
 
 from evalshift import config, safety
 from evalshift.capture import state
@@ -170,6 +170,46 @@ def _run_tool(
             return result
 
 
+async def _run_tool_async(
+    fn: Callable[P, Any],
+    tool_name: str,
+    tree: SpanTree,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> Any:
+    # Async mirror of _run_tool. The sync ``with state.use_parent(call_id)`` set/resets its
+    # contextvar token in *this* task, so parentage holds across the await; asyncio.gather copies
+    # the context into child tasks, so concurrent tools each see the right parent (state.py docs).
+    call_id = _new_call_id()
+    arguments = safety.guard("bind tool args", lambda: _bind(fn, args, kwargs)) or {}
+    parent = state.current_parent()
+    start = _now()
+    span = safety.guard(
+        "open tool span",
+        lambda: tree.open_span(
+            "tool",
+            span_id=call_id,
+            start_ts=start,
+            parent_call_id=parent,
+            data={"name": tool_name, "arguments": arguments},
+        ),
+    )
+    parent_cm = state.use_parent(call_id) if span is not None else nullcontext()
+    with parent_cm:
+        try:
+            result = await fn(*args, **kwargs)
+        except BaseException as exc:
+            if span is not None:
+                with safety.fail_open("close tool span (error)"):
+                    tree.close_span(span, end_ts=_now(), result=None, error=str(exc))
+            raise
+        else:
+            if span is not None:
+                with safety.fail_open("close tool span"):
+                    tree.close_span(span, end_ts=_now(), result=result)
+            return result
+
+
 def _run_agent(
     fn: Callable[P, R],
     *,
@@ -210,6 +250,129 @@ def _run_agent(
             return result
 
 
+async def _run_agent_async(
+    fn: Callable[P, Any],
+    *,
+    suite: str,
+    code_version: str,
+    redact: Redactor | None,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> Any:
+    # Async mirror of _run_agent. _record_error/_finalize are sync (Sink.write is sync), so the
+    # async path reuses them verbatim — no await. Same fail-open + error-event-then-raise contract.
+    tree = safety.guard("open session", SpanTree)
+    if tree is None:
+        return await fn(*args, **kwargs)  # bookkeeping failed -> transparent pass-through
+    agent_input = safety.guard("derive agent input", lambda: _bind(fn, args, kwargs))
+    capture_id = _new_capture_id()
+    with state.use_tree(tree):
+        try:
+            result = await fn(*args, **kwargs)
+        except BaseException as exc:
+            _record_error(tree, exc)
+            _finalize(
+                tree,
+                suite=suite,
+                agent_input=agent_input,
+                capture_id=capture_id,
+                code_version=code_version,
+                redact=redact,
+            )
+            raise
+        else:
+            _finalize(
+                tree,
+                suite=suite,
+                agent_input=agent_input,
+                capture_id=capture_id,
+                code_version=code_version,
+                redact=redact,
+            )
+            return result
+
+
+class _ModelCallRecorder:
+    """Streaming model-call span: open on enter, record accumulated text + usage once on close.
+
+    Dual-protocol — usable as ``with capture.model_call(...)`` or ``async with`` — so it wraps
+    either a sync generator or an ``async for`` token stream. Accumulate output with
+    :meth:`add_text` and (optionally) usage with :meth:`set_usage`; on exit it records exactly one
+    ``model_call`` span carrying the joined output. No active session => inert (no span, no write).
+    Every bookkeeping step is fail-open, so a recorder fault never breaks the host stream loop.
+    """
+
+    __slots__ = ("_input", "_model_id", "_parts", "_span", "_tree", "_usage")
+
+    def __init__(self, *, model_id: str, input: Any) -> None:
+        self._model_id = model_id
+        self._input = input
+        self._parts: list[str] = []
+        self._usage: dict[str, Any] = {}
+        self._tree: SpanTree | None = None
+        self._span: Any = None
+
+    def add_text(self, text: str) -> None:
+        """Append a streamed chunk to the accumulated model output."""
+        with safety.fail_open("model_call add_text"):
+            self._parts.append(text)
+
+    def set_usage(
+        self,
+        *,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cost_usd: float = 0.0,
+        latency_ms: int | None = None,
+    ) -> None:
+        """Record token counts / cost (optional; omit to keep serializer defaults)."""
+        with safety.fail_open("model_call set_usage"):
+            usage: dict[str, Any] = {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cost_usd": cost_usd,
+            }
+            if latency_ms is not None:
+                usage["latency_ms"] = latency_ms
+            self._usage = usage
+
+    def _open(self) -> None:
+        self._tree = state.current_tree()
+        if self._tree is None:  # no active agent session -> inert
+            return
+        with safety.fail_open("open model_call span"):
+            self._span = self._tree.open_span(
+                "model_call",
+                span_id=f"mc_{uuid.uuid4().hex}",
+                start_ts=_now(),
+                parent_call_id=state.current_parent(),
+                data={"model_id": self._model_id, "input": self._input},
+            )
+
+    def _close(self) -> None:
+        if self._tree is None or self._span is None:
+            return
+        with safety.fail_open("close model_call span"):
+            self._tree.close_span(
+                self._span, end_ts=_now(), output="".join(self._parts), **self._usage
+            )
+        self._span = None  # idempotent: a second exit is a no-op
+
+    def __enter__(self) -> _ModelCallRecorder:
+        self._open()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._close()
+
+    async def __aenter__(self) -> _ModelCallRecorder:
+        self._open()
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        self._close()
+
+
 class _Capture:
     """Public capture facade; the module exposes a single instance named ``capture``."""
 
@@ -222,12 +385,34 @@ class _Capture:
     ) -> Callable[[Callable[P, R]], Callable[P, R]]:
         """Decorator that captures one agent invocation (no-op unless the gate is on).
 
+        Works on both ``def`` and ``async def`` agents: coroutine functions are detected and wrapped
+        in an async wrapper that awaits the call (contextvars propagate across ``await`` and into
+        ``asyncio.gather`` child tasks, so concurrent tool calls get correct parentage).
+
         ``redact`` (a ``(value) -> value`` callable) masks tool/model payloads in-process before
         serialization; it overrides any process-wide ``configure(redact=...)``. If it raises, the
         capture is dropped rather than written unredacted — the host agent is never affected.
         """
 
         def decorate(fn: Callable[P, R]) -> Callable[P, R]:
+            if inspect.iscoroutinefunction(fn):
+                afn = cast("Callable[P, Any]", fn)
+
+                @functools.wraps(fn)
+                async def awrapper(*args: P.args, **kwargs: P.kwargs) -> Any:
+                    if not config.is_capture_enabled():
+                        return await afn(*args, **kwargs)
+                    return await _run_agent_async(
+                        afn,
+                        suite=suite,
+                        code_version=code_version,
+                        redact=redact,
+                        args=args,
+                        kwargs=kwargs,
+                    )
+
+                return cast("Callable[P, R]", awrapper)
+
             @functools.wraps(fn)
             def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
                 if not config.is_capture_enabled():
@@ -287,6 +472,62 @@ class _Capture:
                     redact=redact,
                 )
 
+    @asynccontextmanager
+    async def agent_session_async(
+        self,
+        *,
+        suite: str,
+        code_version: str = "",
+        agent_input: Any = None,
+        redact: Redactor | None = None,
+    ) -> AsyncIterator[SpanTree | None]:
+        """``async with`` form of :meth:`agent_session` for inline async instrumentation.
+
+        Body identical to the sync session: ``_finalize``/``_record_error`` are sync (no I/O to
+        await), so this generator never awaits internally; the ``state.use_tree`` token is set and
+        reset in the caller's task.
+        """
+        if not config.is_capture_enabled():
+            yield None
+            return
+        tree = safety.guard("open session", SpanTree)
+        if tree is None:
+            yield None
+            return
+        capture_id = _new_capture_id()
+        with state.use_tree(tree):
+            try:
+                yield tree
+            except BaseException as exc:
+                _record_error(tree, exc)
+                _finalize(
+                    tree,
+                    suite=suite,
+                    agent_input=agent_input,
+                    capture_id=capture_id,
+                    code_version=code_version,
+                    redact=redact,
+                )
+                raise
+            else:
+                _finalize(
+                    tree,
+                    suite=suite,
+                    agent_input=agent_input,
+                    capture_id=capture_id,
+                    code_version=code_version,
+                    redact=redact,
+                )
+
+    def model_call(self, *, model_id: str, input: Any = None) -> _ModelCallRecorder:
+        """Open a streaming model-call recorder (sync ``with`` or ``async with``).
+
+        Accumulate output via :meth:`_ModelCallRecorder.add_text` and usage via
+        :meth:`_ModelCallRecorder.set_usage`; exactly one ``model_call`` span is recorded on exit.
+        Use :func:`record_model_call` instead for an already-complete (atomic) call.
+        """
+        return _ModelCallRecorder(model_id=model_id, input=input)
+
     @overload
     def tool(self, fn: Callable[P, R]) -> Callable[P, R]: ...
 
@@ -301,6 +542,18 @@ class _Capture:
 
         def decorate(target: Callable[P, R]) -> Callable[P, R]:
             tool_name = name or target.__name__
+
+            if inspect.iscoroutinefunction(target):
+                atarget = cast("Callable[P, Any]", target)
+
+                @functools.wraps(target)
+                async def awrapper(*args: P.args, **kwargs: P.kwargs) -> Any:
+                    tree = state.current_tree()
+                    if tree is None:
+                        return await atarget(*args, **kwargs)
+                    return await _run_tool_async(atarget, tool_name, tree, args, kwargs)
+
+                return cast("Callable[P, R]", awrapper)
 
             @functools.wraps(target)
             def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:

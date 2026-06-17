@@ -13,6 +13,7 @@ Stdlib only (D-deps).
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -52,15 +53,23 @@ class Span:
 
 @dataclass
 class SpanTree:
-    """Ordered collection of spans recorded during one captured agent invocation."""
+    """Ordered collection of spans recorded during one captured agent invocation.
+
+    The ``_lock`` guards order assignment and the span list so concurrent tool calls run from OS
+    threads (``asyncio.to_thread`` / ``run_in_executor``) can't race the non-atomic ``_counter``
+    bump into duplicate ``start_order`` values (Phase 5). Pure single-event-loop ``asyncio`` never
+    contends it; the uncontended acquire is nanoseconds.
+    """
 
     spans: list[Span] = field(default_factory=list)
     _counter: int = 0
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def __iter__(self) -> Any:
         return iter(self.spans)
 
-    def _next_order(self) -> int:
+    def _next_order_locked(self) -> int:
+        """Assign the next monotonic op-index. Caller must already hold ``self._lock``."""
         self._counter += 1
         return self._counter
 
@@ -75,20 +84,22 @@ class SpanTree:
         metadata: dict[str, Any] | None = None,
     ) -> Span:
         """Record the start of an operation and register it on the tree."""
-        span = Span(
-            kind=kind,
-            span_id=span_id,
-            start_ts=start_ts,
-            start_order=self._next_order(),
-            parent_call_id=parent_call_id,
-            data=dict(data) if data is not None else {},
-            metadata=dict(metadata) if metadata is not None else {},
-        )
-        self.spans.append(span)
+        with self._lock:
+            span = Span(
+                kind=kind,
+                span_id=span_id,
+                start_ts=start_ts,
+                start_order=self._next_order_locked(),
+                parent_call_id=parent_call_id,
+                data=dict(data) if data is not None else {},
+                metadata=dict(metadata) if metadata is not None else {},
+            )
+            self.spans.append(span)
         return span
 
     def close_span(self, span: Span, *, end_ts: float, **data_update: Any) -> None:
         """Record the end of an operation, merging any result payload into ``span.data``."""
-        span.end_ts = end_ts
-        span.end_order = self._next_order()
-        span.data.update(data_update)
+        with self._lock:
+            span.end_ts = end_ts
+            span.end_order = self._next_order_locked()
+            span.data.update(data_update)
