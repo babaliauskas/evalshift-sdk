@@ -14,15 +14,18 @@ Sub-phased, resumable. Tackle one phase at a time. Update the **Status** column 
 | 6 | Hygiene + fail-open hardening | ☑ done |
 | 7 | Framework adapters | ◐ LangChain done; llamaindex + openai_agents = 7.2 fast-follow |
 | 8 | Schema versioning + migration | ☑ done |
-| 9 | CLI capture lifecycle (cross-repo) | ☐ not started |
+| 9 | CLI capture lifecycle (cross-repo) | ☑ done (in `evalshift-cli`) |
 | 10 | End-to-end demo + docs | ☐ not started |
 
 Legend: ☐ not started · ◐ in progress · ☑ done
 
-**Last verified 2026-06-17:** Phases 0–6 + Phase 7.1 (LangChain adapter) + Phase 8 (schema
-versioning + migration) complete — 281 tests pass, `mypy --strict` + `ruff` + `ruff format --check`
-clean. Phase 7.2 (llamaindex + openai_agents fast-follow) or Phase 9 (CLI capture lifecycle,
-cross-repo) next up.
+**Last verified 2026-06-17:** SDK Phases 0–6 + 7.1 (LangChain) + 8 complete (281 tests). **Phase 9
+landed in the `evalshift-cli` repo** on branch `feat/phase-9-cli-capture-lifecycle`: `evalshift
+capture list/promote/clean/diff`, a `suites:` config section, and `run --suite-name` — 677 CLI tests
+pass, `mypy --strict` + `ruff` + `ruff format --check` clean. End-to-end proven: a hand-written
+SDK-shaped capture → `capture promote` → `run --suite-name` → `evaluate` scores the target against
+the promoted ground-truth `expected_tools` (pass + regression variants). Phase 7.2 (llamaindex +
+openai_agents fast-follow) or Phase 10 (demo + docs) next up.
 
 ---
 
@@ -330,6 +333,22 @@ def handle_ticket(query): ...
 - 9.3 `evalshift.yaml` `suites: <name>: { source: captured, path: … }`; bridge promote→suite→`run`.
 - 9.4 Nice-to-haves (optional): `promote --interactive`, cost pre-flight, suite manifest.
 - **Verify:** capture (SDK) → `capture promote` → `run` → verdict end-to-end on a sample agent.
+- **☑ Shipped (in `evalshift-cli`, branch `feat/phase-9-cli-capture-lifecycle`):** new
+  `src/evalshift/captures/` package — `reader.py` (`capture_base` honors `EVALSHIFT_DIR`>`.evalshift`,
+  `load_capture` raises typed `CaptureError` not fail-open, `iter_captures`/`find_capture`/
+  `promoted_capture_ids`), `models.py` (`CaptureEnvelope` `extra="ignore"` for forward-compat reusing
+  strict `AgentTrace`; `PromotedCase` provenance wrapper), `promote.py` (pure
+  `build_example_from_capture` + `write_promoted_case` + `rebuild_golden_jsonl`). New
+  `cli/commands/capture.py` (`list`/`promote`/`clean`/`diff`, registered in `cli/main.py`). Config
+  gains `SuiteSource` + `suites: dict` (default `{}`, backward-compatible). `run` gains `--suite-name`
+  via pure `_resolve_suite_path` (explicit `--suite` > `--suite-name` > default `golden.jsonl`).
+  **Decisions:** dir-form case file is canonical + `golden.jsonl` regenerated (never appended) so
+  they can't drift; capture supplies ground-truth `expected_tools`/`expected` (no captured-trace
+  replay — reuses existing orchestrator/evaluators unchanged); `inputs` recovery best-effort via
+  `--input-var` (one-way `input_hash` can't reconstruct structured inputs — documented limitation);
+  `clean` defaults to promoted-only and never touches `suites/`. 677 tests pass; `mypy --strict` +
+  `ruff` + `ruff format --check` clean. Deferred to 9.4/later: `promote --interactive`, cost
+  pre-flight, suite manifest, `capture diff` capture-vs-promoted, capture-as-replay-fixture.
 
 ### Phase 10 — End-to-end demo + docs
 - Sample agent in `examples/support_agent/`; README quickstart mirroring the doc's lifecycle;
