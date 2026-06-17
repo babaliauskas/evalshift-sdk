@@ -27,8 +27,13 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Typing :: Typed",
 ]
-# Stdlib-only runtime (D-deps). Framework adapters land later as optional extras.
+# Stdlib-only runtime (D-deps). Framework adapters land as optional extras (below).
 dependencies = []
+
+[project.optional-dependencies]
+# Framework adapters (Phase 7). The adapter module import-guards langchain so the SDK stays
+# stdlib-only at runtime unless a user opts in with `pip install evalshift-sdk[langchain]`.
+langchain = ["langchain-core>=0.2"]
 
 [project.urls]
 Homepage = "https://github.com/babaliauskas/evalshift-sdk"
@@ -45,6 +50,9 @@ dev = [
     "ruff>=0.5",
     "pydantic>=2.5",
     "typing_extensions>=4.10",
+    # Real end-to-end smoke for the LangChain adapter (Phase 7). Synthetic-callback unit tests
+    # need no langchain; this dev-dep backs the one `importorskip`-guarded real-chain test.
+    "langchain-core>=0.2",
 ]
 
 [tool.hatch.build.targets.wheel]

@@ -12,15 +12,16 @@ Sub-phased, resumable. Tackle one phase at a time. Update the **Status** column 
 | 4 | Redaction at capture | ☑ done |
 | 5 | Async + streaming + concurrency | ☑ done |
 | 6 | Hygiene + fail-open hardening | ☑ done |
-| 7 | Framework adapters | ☐ not started |
+| 7 | Framework adapters | ◐ LangChain done; llamaindex + openai_agents = 7.2 fast-follow |
 | 8 | Schema versioning + migration | ☐ not started |
 | 9 | CLI capture lifecycle (cross-repo) | ☐ not started |
 | 10 | End-to-end demo + docs | ☐ not started |
 
 Legend: ☐ not started · ◐ in progress · ☑ done
 
-**Last verified 2026-06-17:** Phases 0–6 confirmed complete — 221 tests pass,
-`mypy --strict` + `ruff` + `ruff format --check` clean. Phase 7 (framework adapters) next up.
+**Last verified 2026-06-17:** Phases 0–6 + Phase 7.1 (LangChain adapter) complete — 233 tests pass,
+`mypy --strict` + `ruff` + `ruff format --check` clean. Phase 7.2 (llamaindex + openai_agents
+fast-follow) or Phase 8 (schema versioning) next up.
 
 ---
 
@@ -264,11 +265,34 @@ def handle_ticket(query): ...
 
 ### Phase 7 — Framework adapters (problem #7)
 **Goal:** zero-hand-instrument capture for popular frameworks.
-- 7.1 `adapters/langchain.py` — callback handler → trace events (extra `evalshift[langchain]`).
-- 7.2 `adapters/llamaindex.py`, `adapters/openai_agents.py` (LangChain first; others may slip to a
-  fast-follow sub-phase).
-- **Verify:** drive a minimal LangChain chain w/ one tool through the handler → schema-valid
-  capture identical in shape to manual instrumentation.
+- 7.1 `adapters/langchain.py` — `EvalShiftCallbackHandler(BaseCallbackHandler)`. ☑
+  Callbacks fire **flat** (`run_id`/`parent_run_id` UUIDs), not nested on the call stack, so the
+  handler does **not** use the contextvar machinery (`capture/state.py`): it owns its own
+  `SpanTree` per root run, keeps `run_id → span` maps, resolves `parent_call_id` by walking the
+  `parent_run_id` chain to the nearest enclosing *tool*, and finalizes via `api._finalize` at the
+  root-run boundary. No `state.use_tree` binding → no double-record when mixed with decorators.
+  Honors the gate + sampling at root start; redaction via the shared finalize path (decorator
+  `redact=` > `configure(redact=)`); every callback body wrapped in `safety.fail_open`. Framework
+  payloads (chat messages, retrieved docs, tool args) coerced to JSON-able primitives so a
+  non-serializable object can't silently drop the capture (FileSink's `dumps` has no `default=`).
+  Provenance stamped at `event.metadata["adapter"]="langchain"` + `["lc_run_id"]` (top-level
+  metadata is a freeform dict; survives the CLI's `extra="forbid"` alongside the serializer's own
+  `metadata["evalshift"]` block). `langchain-core` is import-guarded (`TYPE_CHECKING` import +
+  runtime `try/except`) → runtime stays stdlib-only; added `[project.optional-dependencies]
+  langchain = ["langchain-core>=0.2"]` + dev-dep for the smoke test.
+- 7.2 `adapters/llamaindex.py`, `adapters/openai_agents.py` — **deferred to fast-follow** (their
+  event models differ; LangChain shipped first per the plan's own allowance). ☐
+- **Verify:** ☑ synthetic-callback unit tests (no langchain dep): chain→tool→model schema-valid +
+  event counts match manual instrumentation; nested-tool parentage (model call's
+  `metadata.evalshift.parent_call_id` == enclosing tool's `call_id`; sibling top-level →
+  null); tool-error → `tool_result.error`; chain-error → `error` event; gate off → zero files;
+  `sample_rate` 0.0 → zero / 1.0 → one; redactor-fault → capture dropped, callback never raises;
+  malformed kwargs (`serialized=None`, end for unknown run_id) never raise; provenance metadata;
+  handler reuse → 2 distinct captures, no state bleed. Plus one `importorskip`-guarded **real
+  `RunnableLambda` + `@tool` chain** smoke (proves real callback signatures match — langchain-core
+  1.4.7). `ruff`/`format`/`mypy --strict`/`pytest` all green (233 tests). Decisions: handler owns
+  its own tree (no contextvars); finalize reuses `api._finalize` (single redaction/sink path);
+  provenance as top-level event metadata keys; payloads coerced to JSON primitives.
 
 ### Phase 8 — Schema versioning + migration (problem #9)
 **Goal:** v1 captures stay promotable/replayable under future SDK/CLI versions.
