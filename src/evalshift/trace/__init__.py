@@ -2,6 +2,29 @@
 
 from __future__ import annotations
 
+from evalshift.trace.migrate import (
+    CURRENT_SCHEMA_VERSION,
+    InvalidSchemaVersionError,
+    Migration,
+    MigrationError,
+    MigrationFn,
+    MissingSchemaVersionError,
+    NoMigrationPathError,
+    SchemaVersion,
+    UnknownEventTypeError,
+    UnreadableCaptureError,
+    UnsupportedSchemaVersionError,
+    detect_version,
+    envelope_from_dict,
+    event_from_dict,
+    load_capture,
+    load_envelope,
+    register_migration,
+    registered_migrations,
+    reset_migrations,
+    trace_from_dict,
+    upgrade_envelope_dict,
+)
 from evalshift.trace.models import (
     AgentTrace,
     CaptureEnvelope,
@@ -14,7 +37,7 @@ from evalshift.trace.models import (
     ToolResultEvent,
     TraceEvent,
 )
-from evalshift.trace.schema import SCHEMA_VERSION
+from evalshift.trace.schema import SCHEMA_VERSION, SUPPORTED_SCHEMA_VERSIONS
 from evalshift.trace.serialize import (
     build_capture,
     build_fixture_table,
@@ -25,21 +48,43 @@ from evalshift.trace.serialize import (
 )
 
 __all__ = [
+    "CURRENT_SCHEMA_VERSION",
     "SCHEMA_VERSION",
+    "SUPPORTED_SCHEMA_VERSIONS",
     "AgentTrace",
     "CaptureEnvelope",
     "ErrorEvent",
     "FinalOutputEvent",
     "GuardrailEvent",
+    "InvalidSchemaVersionError",
+    "Migration",
+    "MigrationError",
+    "MigrationFn",
+    "MissingSchemaVersionError",
     "ModelCallEvent",
+    "NoMigrationPathError",
     "RetrievalEvent",
+    "SchemaVersion",
     "ToolCallEvent",
     "ToolResultEvent",
     "TraceEvent",
+    "UnknownEventTypeError",
+    "UnreadableCaptureError",
+    "UnsupportedSchemaVersionError",
     "build_capture",
     "build_fixture_table",
     "canonical_hash",
     "capture_filename",
+    "detect_version",
     "dumps",
+    "envelope_from_dict",
     "envelope_to_dict",
+    "event_from_dict",
+    "load_capture",
+    "load_envelope",
+    "register_migration",
+    "registered_migrations",
+    "reset_migrations",
+    "trace_from_dict",
+    "upgrade_envelope_dict",
 ]

@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from evalshift.trace import schema
+from evalshift.trace import migrate, schema
 from tests.conformance.cli_models_vendored import (
     AgentTrace,
     ErrorEvent,
@@ -85,6 +85,16 @@ def test_event_fields_match_vendored_model(event_type: str) -> None:
 
 def test_agenttrace_fields_match_vendored_model() -> None:
     assert set(schema.AGENT_TRACE_FIELDS) == set(AgentTrace.model_fields)
+
+
+def test_reconstruction_map_matches_event_types() -> None:
+    # The reverse-load dispatch map (Phase 8) must cover exactly the contract event types, so a
+    # future event-type addition that isn't mirrored in migrate.py fails the build.
+    assert set(migrate._EVENT_CLASS_BY_TYPE) == set(schema.EVENT_TYPES)
+
+
+def test_current_version_is_supported() -> None:
+    assert schema.SCHEMA_VERSION in schema.SUPPORTED_SCHEMA_VERSIONS
 
 
 def test_trace_roles_match() -> None:

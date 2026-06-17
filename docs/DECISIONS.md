@@ -49,8 +49,8 @@ may still contain) is documented in `docs/REDACTION.md`. See D-4a / D-4b for the
 
 ### 5. Trace `schema_version`
 SDK trace schema is versioned independently of the CLI artifact version; `SCHEMA_VERSION = "1.0.0"`
-frozen in `src/evalshift/trace/schema.py`. Migration path defined in Phase 8. See D-5b for where
-the version is emitted.
+frozen in `src/evalshift/trace/schema.py`. *Migration path implemented in Phase 8 — see D-8 and
+`docs/SCHEMA.md`.* See D-5b for where the version is emitted.
 
 ## Phase-0 implementation decisions (confirmed this session)
 
@@ -138,6 +138,38 @@ exactly as in Phases 0-5; `active_sink()` returns the bare sink with identity pr
 - **Verified by:** `tests/test_hygiene_{sample,dedup,gc,sink}.py`, `tests/test_capture_sampling.py`,
   `tests/test_capture_hygiene_e2e.py`, and the hygiene fault matrix added to
   `tests/test_capture_failopen.py` + `tests/test_capture_async_failopen.py`.
+
+## Phase-8 implementation decisions (confirmed this session)
+
+### D-8 — schema migration: upgrade-on-read, raise-not-fail-open
+Phase 8 adds the SDK's first read/deserialize path in `src/evalshift/trace/migrate.py`. Today
+there is exactly one schema version (`1.0.0`), so this phase builds the **framework + policy +
+reverse-load path** and tests it with *synthetic* migrations (no fake project history). Full
+policy in `docs/SCHEMA.md`.
+
+- **Dicts-first, typed reconstruction second.** Migrations are pure `dict -> dict` steps
+  (tolerant of unknown fields). `load_capture` parses + migrates to a dict; `load_envelope` then
+  reconstructs typed dataclasses (`envelope_from_dict` / `event_from_dict` — the inverse of
+  `to_jsonable`). Reconstruction drops unknown event *fields* (forward-minor tolerance) but treats
+  an unknown event *type* as a hard error.
+- **Raise, don't fail open.** The migrate/load path is **read-side tooling** (the CLI consumes it
+  in Phase 9), not the capture hot path. It raises typed `MigrationError` subclasses on
+  unreadable/unsupported input — the opposite of `safety.py`'s host-protecting fail-open, which
+  applies only while *capturing*.
+- **Forward-compat = warn newer-minor, refuse newer-major.** A newer minor/patch (same major) is
+  read best-effort with a `warning`; a newer major raises `UnsupportedSchemaVersionError`. Safe
+  because the version governs only the envelope and the inner trace is independently CLI-valid;
+  minor bumps are additive-only.
+- **Linear chain, forward-only.** One registered outgoing step per version
+  (`register_migration` / `reset_migrations`), walked from source to current; no downgrade path. A
+  missing step raises `NoMigrationPathError`. The migrated input is never mutated (a deep copy is
+  upgraded).
+- **No missing-version guessing.** A capture lacking `schema_version` raises unless a caller opts
+  into `default_version=`.
+- **Verified by:** `tests/test_migrate.py`, `tests/test_migrate_reconstruct.py`, and
+  `tests/conformance/test_migrate_parity.py` (migrated + reloaded inner traces validate against the
+  vendored CLI `AgentTrace` — the promotable/replayable proof). The drift guard in
+  `tests/conformance/test_parity.py` ties the reconstruction map to `schema.EVENT_TYPES`.
 
 ## Open follow-ups (not blocking v1)
 - **D1-followup:** unify packaging so CLI + SDK co-install cleanly (CLI-depends-on-SDK, or a single

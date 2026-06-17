@@ -18,6 +18,12 @@ from typing import Final
 #: capture envelope, not the trace itself.
 SCHEMA_VERSION: Final = "1.0.0"
 
+#: Envelope schema versions this SDK can read (after upgrade-on-read in ``trace/migrate.py``).
+#: Older versions migrate up to ``SCHEMA_VERSION``. Today this is exactly the one frozen
+#: version — the migration framework lands in Phase 8; entries for older versions appear only
+#: as the schema actually evolves.
+SUPPORTED_SCHEMA_VERSIONS: Final[tuple[str, ...]] = (SCHEMA_VERSION,)
+
 #: Discriminator values for the ``TraceEvent`` union (CLI ``type`` field).
 EVENT_TYPES: Final[tuple[str, ...]] = (
     "model_call",
@@ -93,5 +99,6 @@ __all__ = [
     "EVENT_TYPES",
     "GUARDRAIL_VERDICTS",
     "SCHEMA_VERSION",
+    "SUPPORTED_SCHEMA_VERSIONS",
     "TRACE_ROLES",
 ]

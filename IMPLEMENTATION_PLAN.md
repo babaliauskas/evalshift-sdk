@@ -13,15 +13,16 @@ Sub-phased, resumable. Tackle one phase at a time. Update the **Status** column 
 | 5 | Async + streaming + concurrency | ☑ done |
 | 6 | Hygiene + fail-open hardening | ☑ done |
 | 7 | Framework adapters | ◐ LangChain done; llamaindex + openai_agents = 7.2 fast-follow |
-| 8 | Schema versioning + migration | ☐ not started |
+| 8 | Schema versioning + migration | ☑ done |
 | 9 | CLI capture lifecycle (cross-repo) | ☐ not started |
 | 10 | End-to-end demo + docs | ☐ not started |
 
 Legend: ☐ not started · ◐ in progress · ☑ done
 
-**Last verified 2026-06-17:** Phases 0–6 + Phase 7.1 (LangChain adapter) complete — 233 tests pass,
-`mypy --strict` + `ruff` + `ruff format --check` clean. Phase 7.2 (llamaindex + openai_agents
-fast-follow) or Phase 8 (schema versioning) next up.
+**Last verified 2026-06-17:** Phases 0–6 + Phase 7.1 (LangChain adapter) + Phase 8 (schema
+versioning + migration) complete — 281 tests pass, `mypy --strict` + `ruff` + `ruff format --check`
+clean. Phase 7.2 (llamaindex + openai_agents fast-follow) or Phase 9 (CLI capture lifecycle,
+cross-repo) next up.
 
 ---
 
@@ -296,9 +297,28 @@ def handle_ticket(query): ...
 
 ### Phase 8 — Schema versioning + migration (problem #9)
 **Goal:** v1 captures stay promotable/replayable under future SDK/CLI versions.
-- 8.1 `trace/migrate.py` — version-tagged loaders; upgrade-on-read.
-- 8.2 Document migration policy in `docs/SCHEMA.md`.
-- **Verify:** an old-`schema_version` fixture loads/migrates; forward-compat test.
+- 8.1 `trace/migrate.py` — the SDK's **first read/deserialize path**. ☑ Two layers:
+  dict-level **upgrade-on-read** (`load_capture`/`upgrade_envelope_dict` walk a registered linear
+  chain of pure `dict→dict` steps to current) + typed **reconstruction** (`load_envelope`/
+  `envelope_from_dict`/`event_from_dict`, the inverse of `to_jsonable`; unknown event *type* →
+  hard error, unknown *fields* dropped). `SchemaVersion` (frozen, ordered) parses `MAJOR.MINOR.PATCH`;
+  `register_migration`/`reset_migrations` populate a lock-guarded `_REGISTRY` (empty at real import —
+  `1.0.0` is the only version, so the chain is exercised with **synthetic** migrations in tests, no
+  fake history). Read-side tooling → **raises** typed `MigrationError` subclasses (not fail-open like
+  the capture path). `schema.py` gains `SUPPORTED_SCHEMA_VERSIONS`; top-level + `trace/__init__` export
+  `load_capture`/`load_envelope`/`MigrationError`/`register_migration`.
+- 8.2 `docs/SCHEMA.md` — versioning + migration policy documented; `DECISIONS.md` D-8 added, D-5
+  marked implemented. ☑
+- **Verify:** ☑ synthetic old-version fixture migrates (single + multi-step chain; missing step →
+  `NoMigrationPathError`); **forward-compat** newer-minor tolerated with a logged warning, newer-major
+  → `UnsupportedSchemaVersionError`; missing/invalid/non-dict version → typed errors; migration never
+  mutates input; bad JSON → `UnreadableCaptureError`; reconstruction round-trips
+  (`build→dumps→load_envelope` is identity; reloaded trace yields the same fixture table; `_parse_dt`
+  handles `Z`). Conformance: migrated + reloaded inner traces validate against the vendored CLI
+  `AgentTrace` (promotable + replayable); migration never leaks `schema_version` into the trace; drift
+  guard ties the reconstruction map to `schema.EVENT_TYPES`. `ruff`/`format`/`mypy --strict`/`pytest`
+  all green (281 tests). Decisions (D-8): dicts-first + opt-in typed reconstruction; raise-not-fail-open
+  on read; warn-newer-minor / refuse-newer-major; linear forward-only chain.
 
 ### Phase 9 — CLI capture lifecycle (CROSS-REPO: `evalshift-cli`)
 **Goal:** complete the doc's end-to-end flow; the CLI consumes `.evalshift/captures/`.
