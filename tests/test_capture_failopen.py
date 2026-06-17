@@ -7,9 +7,10 @@ from typing import Any
 
 import pytest
 
-from evalshift import capture, record_model_call
+from evalshift import capture, configure, record_model_call
 from evalshift.capture import api
 from evalshift.capture.span import SpanTree
+from evalshift.hygiene import dedup, gc
 from tests.conftest import CaptureReader
 
 
@@ -103,6 +104,76 @@ def test_build_capture_fault_does_not_break_host(
         raise RuntimeError("serialize failed")
 
     monkeypatch.setattr(api, "build_capture", boom)
+
+    @capture.agent(suite="fo_suite")
+    def agent() -> str:
+        return "ok"
+
+    assert agent() == "ok"
+
+
+# --- Phase 6 hygiene fault matrix: hygiene machinery never breaks or drops the host ---
+
+
+def test_sink_write_non_oserror_does_not_break_host(
+    capturing: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class ExplodingSink:
+        def write(self, envelope: object) -> Path:
+            raise RuntimeError("kaboom")  # not an OSError -> exercises the outer fail_open
+
+    monkeypatch.setattr("evalshift.config.active_sink", lambda: ExplodingSink())
+
+    @capture.agent(suite="fo_suite")
+    def agent() -> str:
+        return "ok"
+
+    assert agent() == "ok"
+
+
+def test_dedup_check_fault_does_not_break_host_or_drop_capture(
+    capturing: Path, read_captures: CaptureReader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configure(dedup=True)
+
+    def boom(*_a: object, **_k: object) -> bool:
+        raise RuntimeError("dedup registry down")
+
+    monkeypatch.setattr(dedup, "is_duplicate", boom)
+
+    @capture.agent(suite="fo_suite")
+    def agent() -> str:
+        return "ok"
+
+    assert agent() == "ok"
+    assert len(read_captures("fo_suite")) == 1  # dedup fault must not suppress the write
+
+
+def test_gc_fault_does_not_break_host(capturing: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    configure(max_captures=1)
+
+    def boom(*_a: object, **_k: object) -> list[Path]:
+        raise RuntimeError("gc down")
+
+    monkeypatch.setattr(gc, "evict", boom)
+
+    @capture.agent(suite="fo_suite")
+    def agent() -> str:
+        return "ok"
+
+    assert agent() == "ok"
+
+
+def test_hygiene_sink_construction_fault_does_not_break_host(
+    capturing: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configure(dedup=True)
+
+    class BadHygiene:
+        def __init__(self, *_a: object, **_k: object) -> None:
+            raise RuntimeError("ctor down")
+
+    monkeypatch.setattr("evalshift.config.HygieneSink", BadHygiene)
 
     @capture.agent(suite="fo_suite")
     def agent() -> str:

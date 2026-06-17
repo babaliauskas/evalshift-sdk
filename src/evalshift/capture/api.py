@@ -219,6 +219,8 @@ def _run_agent(
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
 ) -> R:
+    if not config.should_capture_now():
+        return fn(*args, **kwargs)  # not sampled -> transparent pass-through (no tree built)
     tree = safety.guard("open session", SpanTree)
     if tree is None:
         return fn(*args, **kwargs)  # bookkeeping failed -> transparent pass-through
@@ -261,6 +263,8 @@ async def _run_agent_async(
 ) -> Any:
     # Async mirror of _run_agent. _record_error/_finalize are sync (Sink.write is sync), so the
     # async path reuses them verbatim — no await. Same fail-open + error-event-then-raise contract.
+    if not config.should_capture_now():
+        return await fn(*args, **kwargs)  # not sampled -> transparent pass-through (no tree)
     tree = safety.guard("open session", SpanTree)
     if tree is None:
         return await fn(*args, **kwargs)  # bookkeeping failed -> transparent pass-through
@@ -443,6 +447,9 @@ class _Capture:
         if not config.is_capture_enabled():
             yield None
             return
+        if not config.should_capture_now():
+            yield None
+            return
         tree = safety.guard("open session", SpanTree)
         if tree is None:
             yield None
@@ -488,6 +495,9 @@ class _Capture:
         reset in the caller's task.
         """
         if not config.is_capture_enabled():
+            yield None
+            return
+        if not config.should_capture_now():
             yield None
             return
         tree = safety.guard("open session", SpanTree)

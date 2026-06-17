@@ -106,8 +106,46 @@ auto-run; with no `redact=` set, payloads are captured verbatim (unchanged from 
   Opt-in keeps the masking decision explicit and auditable.
 - **Precedence:** a decorator-level `redact=` overrides any process-wide `configure(redact=...)`.
 
+## Phase-6 implementation decisions (confirmed this session)
+
+### D-6 — hygiene is opt-in, fail-open, and self-managing
+Three independent firehose controls, all **off by default** (with no knob set, capture behaves
+exactly as in Phases 0-5; `active_sink()` returns the bare sink with identity preserved):
+
+- **Sampling decides at agent entry**, not write time. `should_capture_now()` is read at the top of
+  `_run_agent`/`_run_agent_async` and both `agent_session*` context managers; an unsampled run is a
+  near-pure pass-through (no span tree, no redaction, no serialize). Decision made once per run.
+- **Dedup + GC compose as a `HygieneSink`** returned by `active_sink()` only when a knob is set —
+  the single write seam in `capture/api.py` is unchanged. Fail-open is **granular inside the
+  wrapper**: the outer `fail_open("sink write")` would drop the whole capture, so the dedup check
+  and GC are guarded individually — a dedup fault defaults to "not a duplicate, write it"; a GC
+  fault is swallowed after the write already succeeded. Neither can suppress the base write.
+
+- **Why these defaults:**
+  - *Sampling-on-fault → capture* (not drop): a sampling bug must never silently disable all
+    telemetry.
+  - *Dedup keyed by `(suite, input_hash)`* where `input_hash = canonical_hash(agent_input)` (the
+    prompt). Dedup is **best-effort, per-process, in-memory** — a successful capture can suppress a
+    *later identical-input failure*. Accepted for v1 because outcome-aware keying complicates the
+    wrapper; flagged as a follow-up since Phase 2 deemed failed runs the highest-value telemetry.
+    There is **no** cross-process / cross-run dedup. Marked seen on "base write did not raise" (so
+    dedup works for `MemorySink`, whose `write` returns `None`); a `FileSink` disk-full drop still
+    marks seen — a minor, documented imperfection.
+  - *GC orders by filesystem **mtime**, not envelope `created_at`* — the SDK never reads `created_at`
+    back, so one `os.scandir` stat pass (no JSON parse) gives both count-ordering and TTL-age
+    cheaply, even at large `max_captures`. Limitation: tools that rewrite mtimes (`cp -p`, rsync,
+    tar-extract) can perturb eviction order. `capture_ttl` is in **seconds**.
+- **Verified by:** `tests/test_hygiene_{sample,dedup,gc,sink}.py`, `tests/test_capture_sampling.py`,
+  `tests/test_capture_hygiene_e2e.py`, and the hygiene fault matrix added to
+  `tests/test_capture_failopen.py` + `tests/test_capture_async_failopen.py`.
+
 ## Open follow-ups (not blocking v1)
 - **D1-followup:** unify packaging so CLI + SDK co-install cleanly (CLI-depends-on-SDK, or a single
   dist with a `[cli]` extra).
+- **Outcome-aware dedup key** so a success can't suppress a later identical-input failure.
+- **Cross-process / on-disk dedup** (the v1 registry is per-process, in-memory).
+- **GC throttling** (every-Nth-write or a background thread) if profiling shows latency at large
+  `max_captures`; a background thread reintroduces the Phase-5 threading concerns — defer
+  deliberately.
 - TS SDK (deferred).
 - Live sandbox tool execution during replay (spec's opt-in, later).

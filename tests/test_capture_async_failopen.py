@@ -8,7 +8,8 @@ from typing import Any
 
 import pytest
 
-from evalshift import capture
+from evalshift import capture, configure
+from evalshift.hygiene import dedup, gc
 from tests.conftest import CaptureReader
 
 
@@ -83,3 +84,75 @@ async def test_gather_one_tool_raises_records_that_tools_error(
     assert bad_results[0]["error"] == "nope"
     # The agent-level error event is recorded too.
     assert any(e["type"] == "error" for e in events)
+
+
+# --- Phase 6 hygiene fault matrix (async mirror): never breaks or drops the host ---
+
+
+async def test_async_sink_write_non_oserror_does_not_break_host(
+    capturing: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class ExplodingSink:
+        def write(self, envelope: object) -> Path:
+            raise RuntimeError("kaboom")
+
+    monkeypatch.setattr("evalshift.config.active_sink", lambda: ExplodingSink())
+
+    @capture.agent(suite="fail_suite")
+    async def agent() -> str:
+        return "ok"
+
+    assert await agent() == "ok"
+
+
+async def test_async_dedup_check_fault_does_not_break_host_or_drop_capture(
+    capturing: Path, read_captures: CaptureReader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configure(dedup=True)
+
+    def boom(*_a: object, **_k: object) -> bool:
+        raise RuntimeError("dedup registry down")
+
+    monkeypatch.setattr(dedup, "is_duplicate", boom)
+
+    @capture.agent(suite="fail_suite")
+    async def agent() -> str:
+        return "ok"
+
+    assert await agent() == "ok"
+    assert len(read_captures("fail_suite")) == 1
+
+
+async def test_async_gc_fault_does_not_break_host(
+    capturing: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configure(max_captures=1)
+
+    def boom(*_a: object, **_k: object) -> list[Path]:
+        raise RuntimeError("gc down")
+
+    monkeypatch.setattr(gc, "evict", boom)
+
+    @capture.agent(suite="fail_suite")
+    async def agent() -> str:
+        return "ok"
+
+    assert await agent() == "ok"
+
+
+async def test_async_hygiene_sink_construction_fault_does_not_break_host(
+    capturing: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configure(dedup=True)
+
+    class BadHygiene:
+        def __init__(self, *_a: object, **_k: object) -> None:
+            raise RuntimeError("ctor down")
+
+    monkeypatch.setattr("evalshift.config.HygieneSink", BadHygiene)
+
+    @capture.agent(suite="fail_suite")
+    async def agent() -> str:
+        return "ok"
+
+    assert await agent() == "ok"

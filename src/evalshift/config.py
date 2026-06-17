@@ -22,9 +22,13 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+from evalshift import safety
+from evalshift.hygiene import dedup
+from evalshift.hygiene.sample import should_capture
 from evalshift.redaction import Redactor
 from evalshift.sinks.base import Sink
 from evalshift.sinks.file import FileSink
+from evalshift.sinks.hygiene import HygieneSink
 
 #: Env var that gates capture on/off.
 CAPTURE_ENV = "EVALSHIFT_CAPTURE"
@@ -42,8 +46,10 @@ class _Config:
 
     sink: Sink | None = None
     redact: Redactor | None = None  # applied in Phase 4
-    sample_rate: float | None = None  # applied in Phase 6
-    dedup: bool = False  # applied in Phase 6
+    sample_rate: float | None = None  # capture this fraction of runs (Phase 6, entry gate)
+    dedup: bool = False  # collapse identical-input captures (Phase 6)
+    max_captures: int | None = None  # cap a suite dir by count, evict oldest (Phase 6 GC)
+    capture_ttl: float | None = None  # evict captures older than this many seconds (Phase 6 GC)
 
 
 #: The live configuration. Reset between tests via :func:`reset_config`.
@@ -61,6 +67,8 @@ def configure(
     redact: Redactor | None = _UNSET,
     sample_rate: float | None = _UNSET,
     dedup: bool = _UNSET,
+    max_captures: int | None = _UNSET,
+    capture_ttl: float | None = _UNSET,
 ) -> None:
     """Set process-wide capture options. Only the arguments you pass are changed (merge)."""
     if sink is not _UNSET:
@@ -71,6 +79,10 @@ def configure(
         _CONFIG.sample_rate = sample_rate
     if dedup is not _UNSET:
         _CONFIG.dedup = dedup
+    if max_captures is not _UNSET:
+        _CONFIG.max_captures = max_captures
+    if capture_ttl is not _UNSET:
+        _CONFIG.capture_ttl = capture_ttl
 
 
 def reset_config() -> None:
@@ -79,13 +91,37 @@ def reset_config() -> None:
     _CONFIG.redact = None
     _CONFIG.sample_rate = None
     _CONFIG.dedup = False
+    _CONFIG.max_captures = None
+    _CONFIG.capture_ttl = None
+    dedup.reset_registry()
 
 
 def active_sink() -> Sink:
-    """Return the sink captures are written to: the configured one, else a default ``FileSink``."""
-    if _CONFIG.sink is not None:
-        return _CONFIG.sink
-    return FileSink()
+    """Return the sink captures are written to, wrapped with hygiene when any knob is set.
+
+    With no hygiene option configured (``dedup``/``max_captures``/``capture_ttl``) the configured
+    or default sink is returned **unchanged** (identity preserved). Otherwise it is wrapped in a
+    :class:`~evalshift.sinks.hygiene.HygieneSink` that applies dedup + GC around every write.
+    """
+    base = _CONFIG.sink if _CONFIG.sink is not None else FileSink()
+    if not _CONFIG.dedup and _CONFIG.max_captures is None and _CONFIG.capture_ttl is None:
+        return base
+    return HygieneSink(
+        base,
+        dedup=_CONFIG.dedup,
+        max_captures=_CONFIG.max_captures,
+        capture_ttl=_CONFIG.capture_ttl,
+    )
+
+
+def should_capture_now() -> bool:
+    """Sampling decision for one agent run (read at agent entry). Fail-open: capture on fault.
+
+    A configured ``sample_rate`` decides the draw; a fault in the draw defaults to **capturing**
+    so a sampling bug never silently disables all telemetry.
+    """
+    decision = safety.guard("sample decision", lambda: should_capture(_CONFIG.sample_rate))
+    return decision is not False
 
 
 def active_redactor() -> Redactor | None:
@@ -100,4 +136,5 @@ __all__ = [
     "configure",
     "is_capture_enabled",
     "reset_config",
+    "should_capture_now",
 ]

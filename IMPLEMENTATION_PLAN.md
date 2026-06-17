@@ -11,7 +11,7 @@ Sub-phased, resumable. Tackle one phase at a time. Update the **Status** column 
 | 3 | Sinks + config + env robustness | ☑ done |
 | 4 | Redaction at capture | ☑ done |
 | 5 | Async + streaming + concurrency | ☑ done |
-| 6 | Hygiene + fail-open hardening | ☐ not started |
+| 6 | Hygiene + fail-open hardening | ☑ done |
 | 7 | Framework adapters | ☐ not started |
 | 8 | Schema versioning + migration | ☐ not started |
 | 9 | CLI capture lifecycle (cross-repo) | ☐ not started |
@@ -19,8 +19,8 @@ Sub-phased, resumable. Tackle one phase at a time. Update the **Status** column 
 
 Legend: ☐ not started · ◐ in progress · ☑ done
 
-**Last verified 2026-06-16:** Phases 0–5 confirmed complete — 165 tests pass,
-`mypy --strict` + `ruff` + `ruff format --check` clean. Phase 6 not started (next up).
+**Last verified 2026-06-17:** Phases 0–6 confirmed complete — 221 tests pass,
+`mypy --strict` + `ruff` + `ruff format --check` clean. Phase 7 (framework adapters) next up.
 
 ---
 
@@ -245,13 +245,22 @@ def handle_ticket(query): ...
 
 ### Phase 6 — Hygiene + fail-open hardening (problems #4, #10)
 **Goal:** firehose self-manages; SDK can never break the host agent.
-- 6.1 `hygiene/gc.py` (`max_captures` / `capture_ttl`, evict oldest); `hygiene/dedup.py`
-  (dedup-by-input opt-in; keep non-dedup for target-consistency); `hygiene/sample.py`
-  (`capture_sample_rate`).
-- 6.2 **Fail-open audit**: every SDK boundary wrapped in `safety.py` swallow-and-log. Fault
-  injection: disk full, sink raises, redactor raises, serialize raises → user call still returns.
-- **Verify:** GC evicts oldest beyond cap; dedup collapses identical inputs; sample rate honored;
-  fault-injection test matrix proves no exception ever propagates to the caller.
+- 6.1 `hygiene/gc.py` (`max_captures` / `capture_ttl`, evict oldest by mtime); `hygiene/dedup.py`
+  (per-process dedup-by-input opt-in; keep non-dedup for target-consistency); `hygiene/sample.py`
+  (`sample_rate`, decided at agent entry). ☑ Composed via `sinks/hygiene.py` `HygieneSink` wrapper
+  returned by `config.active_sink()` only when a knob is set (bare sink otherwise — identity
+  preserved); sampling gates at all four agent entry points via `config.should_capture_now()`.
+- 6.2 **Fail-open audit**: every SDK boundary wrapped in `safety.py` swallow-and-log; dedup + GC
+  guarded *individually inside* `HygieneSink` so a hygiene fault never drops the base write. Fault
+  injection: sink raises (OSError + non-OSError), redactor raises, serialize raises, sampling RNG
+  raises, dedup raises, GC raises, `HygieneSink` ctor raises → user call still returns. ☑
+- **Verify:** ☑ GC evicts oldest beyond cap + TTL-aged; dedup collapses identical inputs (and a
+  success suppresses a later identical-input failure — best-effort, D-6); sample rate honored at all
+  four entry points (`0.0`→zero files, `1.0`/None→one, mid-rate via patched RNG, unsampled run is a
+  true pass-through); fault matrix (sync + async) proves no exception reaches the caller.
+  `ruff`/`format`/`mypy --strict`/`pytest` all green (221 tests). Decisions (D-6): sampling-on-fault
+  → capture; dedup per-process/in-memory/best-effort; GC by filesystem mtime, `capture_ttl` in
+  seconds. Follow-ups logged: outcome-aware dedup key, cross-process dedup, GC throttling.
 
 ### Phase 7 — Framework adapters (problem #7)
 **Goal:** zero-hand-instrument capture for popular frameworks.
