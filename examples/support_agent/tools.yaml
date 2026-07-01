@@ -1,0 +1,30 @@
+# Tool catalogue for the support-agent eval (Anthropic-shape; LiteLLM accepts it on any provider).
+- name: search_orders
+  description: |
+    Look up a customer's recent orders by customer id. Use for any request
+    about order status, shipping, or before issuing a refund.
+  input_schema:
+    type: object
+    properties:
+      customer_id: {type: string, description: "Customer ID to search."}
+    required: [customer_id]
+
+- name: issue_refund
+  description: |
+    Issue a refund on an existing order. Use only when the customer has clearly
+    asked for a refund or the situation warrants one (damaged / late / duplicate).
+  input_schema:
+    type: object
+    properties:
+      order_id: {type: string, description: "Order to refund."}
+    required: [order_id]
+
+- name: lookup_customer
+  description: |
+    Find a customer record by id or email. Use when the message has an email but
+    no customer id, or to confirm a profile before acting.
+  input_schema:
+    type: object
+    properties:
+      query: {type: string, description: "Customer id or email."}
+    required: [query]

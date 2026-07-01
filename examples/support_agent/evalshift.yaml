@@ -1,0 +1,30 @@
+# EvalShift eval config for the SDK demo. The suite is produced by `evalshift capture promote`
+# (source: captured), not hand-authored -- that is the piece this demo proves.
+version: 1
+
+# Hosted project slug is supplied at push time: `evalshift push <run> --project <org>/sdk-demo`.
+
+prompts:
+  - id: support
+    detection: python_string
+    path: prompts.py
+    variable: AGENT_SYSTEM_PROMPT
+    variables: [query]
+    tools_path: tools.yaml   # makes this an agent prompt -> tool evaluators apply
+
+defaults:
+  source_model: gemini-2.5-flash
+  target_model: gemini-3.1-flash-lite-preview
+  concurrency: 2
+  cache: false
+
+evaluators:
+  # Does the candidate model call the same tools the capture recorded as ground truth?
+  tool_selection:
+    - name: routing
+      mode: expected
+
+suites:
+  support_demo:
+    source: captured
+    path: .evalshift/suites/support_demo/golden.jsonl
