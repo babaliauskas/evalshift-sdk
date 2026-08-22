@@ -4,8 +4,8 @@ A toolset (the tools an agent was offered on a given model call) is written **on
 distinct fingerprint and referenced from every capture that used it by ``toolset_ref``, instead
 of inlining the full schema into every capture -- a real toolset can be tens of KB against a
 capture bundle averaging a few KB. This module is the storage layer only: it does not normalise
-tools or compute the fingerprint (that is :mod:`evalshift.capture.toolset`), and nothing calls it
-yet -- a later phase wires it into the model-call recorders.
+tools or compute the fingerprint (that is :mod:`evalshift.capture.toolset`); the model-call
+recorders in :mod:`evalshift.capture.api` call it, via that module's ``_stamp_toolset`` helper.
 
 Path layout is ``<base>/toolsets/<hex>.json``, where ``<hex>`` is the fingerprint with its
 ``sha256:`` prefix stripped. The prefixed ``sha256:...`` form is what a ``toolset_ref`` on a
