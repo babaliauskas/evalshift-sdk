@@ -1,0 +1,444 @@
+# evalshift-sdk — complete reference for AI tools
+
+Canonical hosted copy: https://www.evalshift.dev/sdk-llms-full.txt
+Package: evalshift-sdk (PyPI) | import: evalshift | version: 0.3.0 | schema: 2.0.0
+Python: >=3.10 | runtime deps: none (stdlib only) | typed (py.typed) | license: MIT
+Install: pip install evalshift-sdk   (or: uv add evalshift-sdk)
+Optional extra: pip install "evalshift-sdk[langchain]" -> langchain-core>=0.2
+
+Purpose: in-process capture SDK for AI agents. Wraps agent invocations, tool calls, and model
+calls; records each run as a span tree; serializes to a JSON capture envelope written to
+<base>/captures/<suite>/cap_<hex>.json on local disk. No network code anywhere in the SDK.
+Captures are consumed by the separate evalshift CLI
+(https://github.com/babaliauskas/evalshift-cli); disk is the only interface between SDK and CLI.
+
+Quickstart (minimum working setup):
+1. pip install evalshift-sdk
+2. Decorate the agent entry point with @capture.agent(suite="...", redact=..., tools=...); both
+   redact= and tools= are REQUIRED. redact=: True=mask emails/API keys, False=verbatim, or a
+   callable. tools=: the toolset this session's model calls are offered — [] to assert none, or a
+   real toolset (Anthropic/OpenAI/Gemini shape). Record model calls inside with
+   record_model_call(..., tools=...) or capture.model_call(..., tools=...) — pass tools=None on
+   either to inherit the decorator's value instead of asserting a per-call one; decorate tools with
+   @capture.tool.
+3. Run with EVALSHIFT_CAPTURE=1 set (capture is OFF by default — without it every wrapper is a
+   pure pass-through and no file is written).
+4. Result: .evalshift/captures/<suite>/cap_<hex>.json appears in the CWD, ready for the
+   evalshift CLI. Full runnable code in "Minimal examples" below.
+
+Safety model (three distinct rules):
+1. CAPTURE PATH IS FAIL-OPEN: every piece of SDK bookkeeping is guarded; a fault drops the
+   capture and logs one debug line, never raises into the host. The user's function call is the
+   only unwrapped statement — its return value and exceptions always propagate. When the user
+   function raises, an `error` event is recorded, the partial capture is still written, then the
+   original exception re-raises.
+2. REDACTION IS FAIL-CLOSED: a redactor that raises drops the whole capture (never written
+   half-masked). The host agent is unaffected.
+3. READ PATH RAISES: load_capture/load_envelope raise typed MigrationError subclasses; they do
+   not fail open.
+
+## Environment variables
+
+| Var | Default | Meaning | When read |
+|---|---|---|---|
+| EVALSHIFT_CAPTURE | unset (OFF) | Master gate. Truthy set (case-insensitive, stripped): {"1","true","yes","on"}. Anything else = off. | Live, every call |
+| EVALSHIFT_DIR | ".evalshift" | Capture root dir. Relative paths resolve against CWD (no repo-root walk). | Live, each write |
+| EVALSHIFT_MAX_CAPTURES | 200 | Keep newest N *.json per suite dir (GC after each disk write, ordered by file mtime). | Config construction (import / reset_config) |
+| EVALSHIFT_CAPTURE_TTL | off | Evict capture files older than N seconds. | Config construction |
+| EVALSHIFT_DEDUP | on | Per-process dedup keyed (suite, input_hash). | Config construction |
+| EVALSHIFT_SAMPLE_RATE | off (capture all) | Fraction of runs to capture (0.0-1.0), decided once per agent invocation. | Config construction |
+
+"Uncapped/off" literal set for numeric knobs: {"0","none","unlimited","off"} (also empty string).
+Precedence: explicit configure(...) > env var > built-in default. Malformed env values fail open
+to the default. Negative or zero ints -> uncapped (None).
+
+## Full API
+
+All imports `from evalshift import ...` unless noted. `capture` is a module-level singleton
+facade instance.
+
+capture.agent(*, suite: str, redact: Redactor | bool, tools: Any, code_version: str = "",
+              conversation_id: str | None = None, turn_index: int | None = None,
+              parent_capture_id: str | None = None) -> decorator
+  redact= is REQUIRED (no default): True -> default_redactor (masks emails, sk-..., AKIA...,
+  Bearer ... and NOTHING else); False -> capture payloads verbatim; a (value)->value callable ->
+  custom redactor. Any other value, None INCLUDED, raises TypeError at decoration time, whether
+  or not EVALSHIFT_CAPTURE is set. There is no process-wide fallback.
+  tools= is ALSO REQUIRED (no default) -- this session's toolset; see record_model_call below for
+  the accepted shapes and the tools=[] / tools=None distinction. Unlike redact=, an unrecognised
+  VALUE never raises (degrades to no session toolset, debug log) -- only omitting the keyword
+  itself raises TypeError. Inherited by any record_model_call / capture.model_call inside this
+  decorated function that passes its own tools=None; a call's own non-None value always overrides
+  it (per-call authority — a real agent can switch toolsets mid-run).
+  Captures one agent invocation per call. Auto-detects async def. No-op when gate off (gate is
+  re-read at every call, not frozen at decoration — enabling EVALSHIFT_CAPTURE after import
+  works). Agent input auto-derived by binding call args to the signature ({param: value});
+  binding failure falls back to {"args": [...], "kwargs": {...}}. Conversation kwargs are STATIC
+  (fixed at decoration time) — use agent_session for per-turn values.
+
+capture.agent_session(*, suite: str, redact: Redactor | bool, tools: Any, code_version: str = "",
+                      agent_input: Any = None, conversation_id: str | None = None,
+                      turn_index: int | None = None, parent_capture_id: str | None = None)
+  Sync context manager; yields SpanTree | None (None when gate off / not sampled — treat the
+  yielded SpanTree as opaque, its only public use is the None-check). One capture per `with`
+  block. The session is contextvar-scoped, NOT lexical: @capture.tool calls, capture.model_call
+  recorders, and record_model_call attach to it from any function called (directly or
+  transitively) inside the block. redact= and tools= are REQUIRED, same contract as the
+  decorator's, and are validated at the `with` statement. ALWAYS pass agent_input (see behavior
+  rules): any JSON-able value; it is identity only — hashed as-is into the envelope input_hash
+  (dedup key), never stored raw, and redaction does not apply to it. Recommended value: the full
+  messages list. Recommended primitive for multi-turn conversations (fresh turn_index per with).
+
+capture.agent_session_async(...)
+  Identical params/behavior; `async with` form.
+
+capture.model_call(*, model_id: str, tools: Any, input: Any = None,
+                   generation_config: dict[str, Any] | None = None) -> recorder
+  Streaming model-call recorder; usable as `with` or `async with`. Methods:
+    rec.add_text(text: str) -> None            # append streamed chunk
+    rec.set_usage(*, input_tokens: int = 0, output_tokens: int = 0, cost_usd: float = 0.0,
+                  latency_ms: int | None = None) -> None
+    rec.set_generation_config(config: dict[str, Any]) -> None   # last write wins; mid-stream OK
+  Records exactly one model_call event on exit, output = "".join(chunks). latency_ms auto-derived
+  from block duration (round((end-start)*1000)) unless set via set_usage. Inert without an active
+  session (no toolset resolution/sidecar write either, for a no-op). Recorder faults never break
+  the host stream loop. tools= is REQUIRED, same contract as record_model_call below.
+  generation_config as in record_model_call below.
+
+capture.tool  /  capture.tool(name: str | None = None)
+  Decorator (bare or with name; name defaults to fn.__name__). Auto-detects async def. Records a
+  tool span -> serialized as TWO events: tool_call (at start; name, arguments, call_id,
+  parent_call_id) + tool_result (at close; result, error). No-op when no agent session active.
+  A raising tool records error=str(exc), result=None, and the exception propagates.
+  NOT related to record_model_call's tools= -- @capture.tool decorates a function your agent
+  actually CALLS; tools= records what the model was OFFERED on a given call, called or not.
+
+record_model_call(*, model_id: str, tools: Any, input: Any = None, output: Any = None,
+                  input_tokens: int = 0, output_tokens: int = 0, cost_usd: float = 0.0,
+                  latency_ms: int | None = None,
+                  generation_config: dict[str, Any] | None = None) -> None
+  Records an already-complete (atomic) model call into the active session. No-op outside one.
+  Zero-duration event: latency_ms is 0 unless passed explicitly.
+  tools= is REQUIRED (no default) -- the toolset this call was offered, in Anthropic
+  ({name, description, input_schema}), OpenAI ({type: "function", function: {name, description,
+  parameters}}), or Gemini types.Tool shape, or a bare list mixing any of those
+  (evalshift.capture.toolset.normalize_tools). Three distinct values:
+    tools=[...]  own toolset for this call -- always wins over the session's, even mid-session
+    tools=[]     REAL assertion "no tools on this call" -- not a default, a value
+    tools=None   defer to the enclosing session's own tools= (capture.agent / agent_session /
+                 agent_session_async) -- the ONE place None has meaning; anywhere else it is just
+                 another value that fails to normalise
+  Recorded as tools_offered (tool-name list, always stamped once the effective value normalises)
+  and toolset_ref (sha256:<hex> pointer to the full schema, written once per distinct toolset by
+  ToolsetSink -- <base>/toolsets/<hex>.json -- stamped only if that write succeeds). A value
+  matching no recognised shape normalises to None: NEITHER field is stamped (debug log only,
+  never raised) -- structurally invalid for that event on purpose, so the CLI refuses it at
+  promotion rather than trusting an unstamped toolset. NOT allow-listed (unlike
+  generation_config): input_schema is arbitrary user JSON needed whole to dispatch; normalisation
+  only recognises/rejects tool SHAPES, never prunes keys within one. NOT redacted, config not
+  payload like generation_config, but by a different mechanism worth knowing: generation_config
+  lives in span.metadata (redact_tree never walks metadata); tools_offered/toolset_ref are
+  top-level span.data fields, safe only because model_call's redactable-field tuple names exactly
+  ("input", "output") and neither toolset field is in it. Full reasoning: docs/DECISIONS.md
+  D-toolset.
+  generation_config: ALLOW-LISTED, then recorded under the event's metadata["generation_config"]
+  so the CLI can replay promoted cases with the same settings. Recorded keys, and ONLY these:
+  temperature, top_p, response_mime_type, response_schema, response_format, max_output_tokens,
+  max_tokens. Every other key is dropped — debug log only, never a warning or raise. Reason:
+  metadata is config, not payload, and the redactor walks payload fields only, so an unlisted key
+  (system_instruction above all, safety_settings) would enter the capture unmasked.
+  Values are JSON-coerced: primitives/dict/list pass through; anything else (e.g. a Pydantic
+  response_schema class) is stored as str(value), so a non-JSON-able setting no longer kills the
+  whole capture at write time. Non-dict generation_config dropped fail-open; a config the
+  allow-list empties writes no generation_config key at all. The LangChain adapter applies the
+  same allow-list to invocation_params (flat keys + a Gemini-style nested generation_config dict;
+  flat wins).
+
+configure(*, sink: Sink | None = UNSET, sample_rate: float | None = UNSET, dedup: bool = UNSET,
+          max_captures: int | None = UNSET, capture_ttl: float | None = UNSET,
+          require_model_call: bool = UNSET) -> None
+  Process-wide options, MERGE semantics: only passed kwargs change. None = disabled/unset for
+  sink/sample_rate/max_captures/capture_ttl. There is NO redact knob — configure(redact=...) was
+  removed in 0.3.0; masking is required per capture point instead. require_model_call=True drops captures with
+  no model_call event (persistence gate for eval-grade capture; off by default).
+
+evalshift.config.reset_config() -> None
+  NOT a top-level export. Resets config to defaults, re-reads hygiene env vars, clears the dedup
+  registry. Test-isolation utility.
+
+Redactor (protocol, @runtime_checkable): __call__(value: Any) -> Any
+
+default_redactor(value: Any) -> Any
+  Recursive; walks str/dict/list/tuple, returns copies (never mutates), other types pass
+  through. Masks: emails -> "[REDACTED_EMAIL]"; sk- keys (16+ chars) and AKIA+16 AWS keys ->
+  "[REDACTED_KEY]"; "Bearer <token>" -> "Bearer [REDACTED_KEY]".
+
+Sink (protocol, @runtime_checkable): write(envelope: CaptureEnvelope) -> Path | None
+
+FileSink(base: str | os.PathLike[str] | None = None)
+  .write(envelope) -> Path | None. Writes <base>/captures/<suite>/<capture_id>.json (UTF-8
+  JSON). Base resolution AT WRITE TIME: constructor arg > EVALSHIFT_DIR > ".evalshift" relative
+  to CWD. Returns absolute Path, or None on OSError (capture dropped, debug log). Suite segment
+  sanitized against path traversal (separators and ".." replaced).
+
+MemorySink()
+  .write(envelope) -> None (buffers in memory; nothing touches disk)
+  .flush() -> list[CaptureEnvelope]            # drains and clears, write order
+  .captures -> tuple[CaptureEnvelope, ...]     # non-draining snapshot
+  Thread-safe. Use on read-only filesystems (Lambda) and in tests.
+  EXCEPTION: toolset sidecars (ToolsetSink, behind model_call's toolset_ref) are always
+  file-based, MemorySink or not -- point EVALSHIFT_DIR at a writable mount (e.g. /tmp) too, or
+  every capture's toolset_ref stays unstamped and the CLI refuses to promote it.
+
+load_capture(raw: str | bytes, *, target: str | None = None,
+             default_version: str | None = None) -> dict[str, Any]
+  Parse capture JSON + migrate (upgrade-on-read) to current (or target) schema version. Raises
+  MigrationError subclasses. default_version opts into a version for captures missing
+  schema_version (otherwise MissingSchemaVersionError).
+
+load_envelope(raw: str | bytes, *, target: str | None = None,
+              default_version: str | None = None) -> CaptureEnvelope
+  parse -> upgrade -> reconstruct typed dataclasses. Unknown event type = hard error
+  (UnknownEventTypeError); unknown FIELDS from newer-minor captures dropped tolerantly.
+
+register_migration(from_version: str, to_version: str, apply: Callable[[dict], dict],
+                   *, description: str = "") -> None
+  Register a single-step forward-only schema upgrade. apply must be pure dict->dict, no
+  mutation, no I/O. ValueError on backward/same step or duplicate outgoing edge.
+
+MigrationError — base of all read errors. Subclasses (import from evalshift.trace.migrate):
+  UnreadableCaptureError        bad UTF-8/JSON, non-object top level, bad timestamp
+  MissingSchemaVersionError     no schema_version key and no default_version given
+  InvalidSchemaVersionError     schema_version not "MAJOR.MINOR.PATCH"
+  UnsupportedSchemaVersionError capture major newer than supported -> refused
+  NoMigrationPathError          no registered chain reaches the target version
+  UnknownEventTypeError         event "type" not a known discriminator
+
+SCHEMA_VERSION = "2.0.0" (envelope schema this SDK writes; supported: "2.0.0" -- 2.0.0 registers
+  no migration from any 1.x capture: ObsoleteSchemaVersionError on read, by design, see
+  docs/SCHEMA.md)
+__version__ = "0.3.0"
+
+evalshift.adapters.langchain.EvalShiftCallbackHandler(*, suite: str, redact: Redactor | bool,
+                                                      tools: Any, code_version: str = "")
+  LangChain BaseCallbackHandler; drop into callbacks=[...]. One capture per root run. Gate,
+  sampling, configure(...), dedup, GC apply identically; gate+sampling decided per root run.
+  Keyword-only ctor; NO conversation_id/turn_index/parent_capture_id kwargs. One instance
+  reusable across invocations and threads. redact= and tools= are BOTH REQUIRED. tools= has no
+  per-call override surface here (LangChain callbacks carry no user-supplied tools kwarg): it is
+  normalised ONCE at construction and that one resolved value is stamped onto every model_call
+  span this handler ever opens (on_llm_start / on_chat_model_start), for the handler's whole
+  lifetime -- the handler itself plays the "session" role. Records model calls (with token usage
+  extracted from LLMResult), tool calls, retriever calls (retrieval events), and the chain's
+  final output (final_output event). Payloads coerced to JSON-able primitives. Import is guarded:
+  importing the module without langchain-core installed does not fail. DO NOT mix with
+  @capture.tool on the same code path (double-record risk; the handler keeps its own
+  run_id-based bookkeeping and does not bind the contextvar session).
+
+## Behavior rules (invariants)
+
+- Gate off (EVALSHIFT_CAPTURE not truthy) -> every wrapper is a pure pass-through; nothing
+  recorded, no tree built.
+- No active agent session -> record_model_call, @capture.tool-wrapped calls, and
+  capture.model_call recorders are inert no-ops (no toolset resolution or sidecar write either).
+- Failed agent runs ARE captured: error event recorded (message=str(exc) or exception type name
+  if empty; category=exception class name), partial capture written, original exception
+  re-raises.
+- Dedup: per-process registry keyed (suite, input_hash). Duplicate -> sink write returns None,
+  no file. Registry clears on process restart or reset_config().
+- agent_session with agent_input=None: input_hash is the hash of None (constant) -> with dedup
+  on (the default), every session after the first for that suite is silently dropped. ALWAYS
+  pass agent_input, or set conversation_id.
+- conversation_id set -> input_hash = hash({agent_input, conversation_id, turn_index}), so
+  repeated short turns ("yes", "1pm") don't dedup-collapse. conversation_id=None -> input_hash =
+  hash(agent_input), byte-identical to pre-1.1.0.
+- The SDK never returns the written capture_id to the caller; parent_capture_id must be
+  user-managed or omitted.
+- @capture.agent conversation kwargs are static per decoration; per-turn values require
+  agent_session / agent_session_async.
+- Tool span -> 2 events (tool_call + tool_result). model_call/error spans -> 1 event each.
+- Event ordering: sort by (timestamp, monotonic op-order) -> dense sequence_index; deterministic
+  under concurrency. Span timing/parentage stored under event.metadata["evalshift"].
+- Streaming model_call latency auto-derived from with-block duration; record_model_call latency
+  is 0 unless passed.
+- Session scope is DYNAMIC (contextvar), not lexical: once an agent wrapper/session is active,
+  tool and model-call recording works in any function called from it, however deep — no need to
+  place recording calls lexically inside the decorated function or `with` block.
+- Async: decorators auto-detect async def; contextvars propagate across await and into
+  asyncio.gather child tasks (correct parentage for concurrent tools). Threaded tools
+  (asyncio.to_thread / run_in_executor) are lock-safe.
+- The agent has no user-recordable "final output" field: the manual surface writes no
+  final_output event (LangChain adapter only). Persist the agent's answer as the last
+  model_call's output.
+- Hygiene defaults: dedup ON, max_captures 200/suite, TTL off, sampling off. Escape hatch:
+  EVALSHIFT_MAX_CAPTURES=0 EVALSHIFT_DEDUP=off. GC runs only after a real disk write (Path
+  returned), orders by file mtime, never recurses, never raises.
+- require_model_call=True (opt-in): captures with no model_call event are dropped before
+  redaction/serialization (debug log only).
+- Redaction is REQUIRED at every capture point (agent decorator / agent_session /
+  agent_session_async / handler ctor); there is no process-wide setter and no default. Runs in
+  memory before serialization; masked values flow into trace events AND the derived tool
+  input_hash. Raising redactor -> capture dropped (fail-closed).
+- Redactable fields per span kind: tool: arguments,result,error | model_call: input,output |
+  retrieval: query,documents | guardrail: reason | final_output: text | error: message.
+  NOT scrubbed: names, model_id, token counts, costs, timestamps, call ids,
+  metadata["evalshift"], envelope fields (capture_id, suite, code_version, input_hash).
+- All drops are silent except one logging.getLogger("evalshift") debug line per drop.
+- retrieval / guardrail / final_output event types exist in the schema but have NO public
+  recording API in the manual surface; only the LangChain adapter (retrieval, final_output) and
+  internals emit them. Do not document them as user-recordable.
+- Toolset sidecars (<base>/toolsets/<hex>.json) are content-addressed and written once per
+  distinct fingerprint by ToolsetSink; a repeat write of the same toolset is a cheap no-op
+  existence check, not a second write. GC (hygiene/gc.py) never touches this directory: its
+  caller always passes <base>/captures/<suite>/, a sibling, and evict() never recurses into
+  subdirectories regardless. No orphan sweeping exists for toolsets in this SDK.
+
+## Capture file format
+
+Path: <base>/captures/<suite>/<capture_id>.json  (capture_id = "cap_" + uuid4 hex)
+Toolset sidecars: <base>/toolsets/<fingerprint-hex-no-prefix>.json (see ToolsetSink above)
+
+Envelope keys (unchanged since schema 1.1.0, in order): schema_version, capture_id, suite,
+input_hash, code_version, created_at (ISO-8601 UTC), trace, conversation_id, turn_index,
+parent_capture_id (last three optional, null for standalone captures; added in 1.1.0). Schema
+2.0.0 (current) changed a TRACE-internal field set (model_call gained toolset_ref/tools_offered,
+below), not this envelope key list -- a schema_version bump is still owed for a trace-internal
+field addition even when ENVELOPE_KEYS itself is untouched (docs/SCHEMA.md).
+
+trace (AgentTrace, the frozen CLI contract): run_id, prompt_id, example_id, role
+("source"|"target"), events. Capture-time defaults: run_id=example_id=capture_id,
+prompt_id=suite, role="source".
+
+Event types and own fields (all events also carry: type, sequence_index, timestamp, metadata):
+  model_call:  model_id, input, output, input_tokens, output_tokens, cost_usd, latency_ms,
+               toolset_ref (str|None, "sha256:<hex>"), tools_offered (list[str]|None) -- both
+               added in schema 2.0.0; None on a capture written before per-call toolset capture
+               existed, real values (tools_offered=[] included) on every capture written after
+  tool_call:   name, arguments, call_id, parent_call_id
+  tool_result: name, call_id, result, error
+  retrieval:   source, query, documents
+  guardrail:   name, verdict ("pass"|"fail"|"warn"|"skipped"), reason
+  final_output: text
+  error:       message, category
+
+metadata["evalshift"] block: span_id, start_ts, end_ts, [parent_call_id], and on tool_result:
+input_hash (SHA-256 of the redacted tool arguments; feeds the (call_id, input_hash) -> result
+replay fixture table).
+
+Forward compat on read: older, same major -> migrate up chain; older, different (older) major
+with no registered bridge -> refuse (ObsoleteSchemaVersionError) -- schema 2.0.0 is the concrete
+case: it registers NO migration from any 1.x capture (there is no honest value tools_offered can
+take for one), so a 1.x capture raises ObsoleteSchemaVersionError, not a silent upgrade; same
+version -> as-is; newer minor/patch (same major) -> warn + best-effort read, unknown fields
+dropped; newer major -> refuse (UnsupportedSchemaVersionError).
+
+## Minimal examples
+
+# 1. Decorated agent + tool + atomic model call
+from evalshift import capture, record_model_call
+
+@capture.tool(name="search_orders")
+def search_orders(customer_id: str) -> dict:
+    return {"orders": []}
+
+ROUTER_TOOLS = [{"name": "search_orders", "description": "Look up a customer's orders.",
+                  "input_schema": {"type": "object",
+                                    "properties": {"customer_id": {"type": "string"}},
+                                    "required": ["customer_id"]}}]
+
+@capture.agent(suite="support", redact=True, tools=[])   # this agent never switches toolsets
+def handle_ticket(query: str) -> str:
+    record_model_call(model_id="claude-sonnet-5", tools=ROUTER_TOOLS,
+                      input={"query": query}, output="On it.")
+    search_orders(customer_id="c42")
+    return "done"
+# Run: EVALSHIFT_CAPTURE=1 python agent.py -> .evalshift/captures/support/cap_<hex>.json
+# Sidecar written once: .evalshift/toolsets/<fingerprint-hex>.json ("tools": ROUTER_TOOLS)
+
+# 2. Streaming model call — MUST run inside an active agent session (a @capture.agent call or
+#    an agent_session block); bare capture.model_call outside one is an inert no-op.
+from evalshift import capture
+
+@capture.agent(suite="support", redact=True, tools=[])
+def answer(messages: list) -> str:
+    with capture.model_call(model_id="claude-sonnet-5", tools=[], input=messages) as rec:
+        for chunk in stream:
+            rec.add_text(chunk.text)
+        rec.set_usage(input_tokens=812, output_tokens=204, cost_usd=0.0031)
+    return "done"
+
+# 3. Multi-turn conversation (one capture per turn)
+import uuid
+from evalshift import capture, record_model_call
+conv = f"conv_{uuid.uuid4().hex}"
+messages = [{"role": "system", "content": "You are a scheduling assistant."}]
+for i, user_text in enumerate(turns):
+    messages.append({"role": "user", "content": user_text})
+    with capture.agent_session(suite="scheduler", redact=True, tools=[], agent_input=messages,
+                               conversation_id=conv, turn_index=i):
+        reply = run_model(messages)
+        record_model_call(model_id="claude-sonnet-5", tools=[], input=messages, output=reply)
+    messages.append({"role": "assistant", "content": reply})
+
+# 4. LangChain (pip install "evalshift-sdk[langchain]")
+from evalshift.adapters.langchain import EvalShiftCallbackHandler
+handler = EvalShiftCallbackHandler(suite="rag_agent", redact=True, tools=bound_tools)
+chain.invoke({"question": q}, config={"callbacks": [handler]})
+
+# 5. Redaction — redact= is REQUIRED at every capture point; there is no global setter.
+from evalshift import capture, default_redactor
+
+@capture.agent(suite="support", redact=True, tools=[])     # mask emails/API keys
+def handle(query: str) -> str: ...
+
+@capture.agent(suite="fixtures", redact=False, tools=[])   # verbatim, on purpose
+def replay(case: dict) -> str: ...
+
+def my_redactor(value):                     # custom: any callable (value: Any) -> Any
+    return default_redactor(value)          # must return a copy, never mutate
+
+@capture.agent(suite="clinical", redact=my_redactor, tools=[])
+def handle_case(record: dict) -> str: ...
+
+# 6. Toolset switching + session inheritance (D-toolset) — tools= is REQUIRED at every capture
+#    point; there is no global setter (same shape as rule 5's redact= example).
+from evalshift import capture, record_model_call
+TOOLSET_A = [{"name": "search", "description": "", "input_schema": {}}]
+TOOLSET_B = [{"name": "refund", "description": "", "input_schema": {}}]
+
+@capture.agent(suite="router", redact=False, tools=TOOLSET_A)  # this session's DEFAULT toolset
+def agent(mode: str) -> str:
+    record_model_call(model_id="m", tools=None, output="uses TOOLSET_A")   # inherits the session
+    if mode == "refund":
+        record_model_call(model_id="m", tools=TOOLSET_B, output="uses TOOLSET_B")  # own, overrides
+    return "done"
+# tools=[] asserts "no tools" for real (a value, not a default); tools=None means "same as the
+# session"; any other value is this call's own and always wins, even one that fails to normalise
+# (which does NOT fall back to the session — see docs/DECISIONS.md D-toolset).
+
+# 7. Reading a written capture back (tooling / tests)
+from pathlib import Path
+from evalshift import load_envelope, MigrationError
+try:
+    env = load_envelope(Path(".evalshift/captures/support/cap_abc123.json").read_bytes())
+    print(env.suite, env.capture_id, [e.type for e in env.trace.events])
+except MigrationError as e:                 # read path raises; it does NOT fail open
+    print(f"unreadable capture: {e}")
+    # A 1.x capture lands here too: schema 2.0.0 registers no migration from the 1.x major
+    # (ObsoleteSchemaVersionError, a MigrationError subclass) — re-run the agent to re-capture.
+
+# model_call input convention (multi-turn): full per-turn context, role-tagged:
+# [{"role": "system", ...}, ...prior turns..., {"role": "user", "content": current}]
+
+## Troubleshooting: no file written
+
+Check in order: (1) EVALSHIFT_CAPTURE not truthy; (2) wrong CWD — default .evalshift is
+CWD-relative, set EVALSHIFT_DIR; (3) dedup collapsed it (classic: agent_session without
+agent_input); (4) sampling skipped it; (5) require_model_call dropped it; (6) redactor raised
+(fail-closed); (7) filesystem OSError (use MemorySink on read-only mounts). Enable
+logging.getLogger("evalshift").setLevel(logging.DEBUG) to see which branch fired.
+
+Read-only filesystem / Lambda: MemorySink (or EVALSHIFT_DIR at a writable mount, e.g. /tmp) fixes
+the capture envelope, but do the EVALSHIFT_DIR part regardless -- toolset sidecars are always
+file-based, so with no writable mount at all, toolset_ref stays unstamped on every capture and
+the CLI refuses to promote it.

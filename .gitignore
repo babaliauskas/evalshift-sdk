@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Environments / tooling caches
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Capture output (the SDK writes here at runtime)
+.evalshift/
+
+# OS / editor
+.DS_Store
+
+# Local agent tooling and internal design notes (not part of the published SDK)
+.claude/
+.superpowers/
+docs/superpowers/

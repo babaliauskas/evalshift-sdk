@@ -1,0 +1,31 @@
+# evalshift-sdk
+
+> In-process Python capture SDK for AI agents. Wrap an agent's entry point, tool calls, and model calls; each run is recorded as a structured trace and written as a JSON capture file to `.evalshift/captures/<suite>/cap_<id>.json` on local disk. Capture is off unless the `EVALSHIFT_CAPTURE` env var is truthy. Zero runtime dependencies (stdlib only), Python >= 3.10, no network code. Captures are consumed by the separate [evalshift CLI](https://github.com/babaliauskas/evalshift-cli); disk is the only interface between SDK and CLI.
+
+Key facts:
+
+- Distribution name is `evalshift-sdk`; import name is `evalshift`. Current version 0.2.0, envelope schema version 1.1.0.
+- Top-level public API: `capture` (with `.agent`, `.agent_session`, `.agent_session_async`, `.model_call`, `.tool`), `record_model_call`, `configure`, `Redactor`, `RedactSetting`, `default_redactor`, `FileSink`, `MemorySink`, `load_capture`, `load_envelope`, `register_migration`, `MigrationError`, `SCHEMA_VERSION`, `__version__`. LangChain adapter: `evalshift.adapters.langchain.EvalShiftCallbackHandler` (needs the `[langchain]` extra).
+- Redaction is required, not opt-in: `redact=` is a mandatory keyword on `capture.agent`, `capture.agent_session`, `capture.agent_session_async`, and `EvalShiftCallbackHandler` — `True` masks with `default_redactor`, `False` captures verbatim, a callable is your own redactor; anything else (including `None`) raises `TypeError`. There is no `configure(redact=...)`.
+- Safety model: the capture path is fail-open (SDK faults can never break or slow the host agent; failed runs are still captured, then the original exception re-raises); redaction is fail-closed (a raising redactor drops the capture rather than writing unredacted data); the read path (`load_capture`/`load_envelope`) raises typed `MigrationError` subclasses.
+- Hygiene defaults keep `captures/` bounded: dedup on (per-process, keyed `(suite, input_hash)`), newest-200 files kept per suite. Configurable via `configure(...)` or `EVALSHIFT_MAX_CAPTURES` / `EVALSHIFT_DEDUP` / `EVALSHIFT_CAPTURE_TTL` / `EVALSHIFT_SAMPLE_RATE`; capture root via `EVALSHIFT_DIR`.
+
+## Docs
+
+- [DOCS.md](DOCS.md): full guide — installation, quickstart, how it works, instrumenting agents, configuration, sinks, redaction, complete API reference, troubleshooting
+- [llms-full.txt](llms-full.txt): complete dense API and behavior reference for LLMs — hosted at https://www.evalshift.dev/sdk-llms-full.txt (stable URL for AGENTS.md / CLAUDE.md files)
+- [CHANGELOG.md](CHANGELOG.md): release history
+
+## Reference
+
+- [docs/SCHEMA.md](docs/SCHEMA.md): capture envelope schema versioning, migration policy, the messages-list convention for model_call input, input_hash semantics
+- [docs/REDACTION.md](docs/REDACTION.md): the redaction boundary, guarantees, default patterns, what a capture may still contain
+
+## Examples
+
+- [examples/support_agent/agent.py](examples/support_agent/agent.py): runnable deterministic demo agent using @capture.agent, @capture.tool, and record_model_call
+
+## Optional
+
+- [docs/DECISIONS.md](docs/DECISIONS.md): locked design decisions (D-refs) and rationale
+- [README.md](README.md): short package overview

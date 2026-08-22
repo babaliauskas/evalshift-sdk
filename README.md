@@ -1,0 +1,73 @@
+# evalshift-sdk
+
+In-process capture SDK for [EvalShift](https://github.com/babaliauskas/evalshift-cli).
+
+Install it inside your agent process to record what the agent does — model calls, tool calls,
+retrievals — and write CLI-valid traces to `.evalshift/captures/`. The `evalshift` CLI reads
+those captures from disk; the SDK and CLI never call each other.
+
+- **Distribution:** `evalshift-sdk` · **import name:** `evalshift`
+- **Runtime deps:** none (stdlib-only)
+- **Python:** >= 3.10
+- **Capture is off by default** — set `EVALSHIFT_CAPTURE=1` to record.
+- **License:** [MIT](LICENSE)
+
+## For AI coding agents
+
+Point your coding agent at the dense, single-file reference for the piece it is
+working on:
+
+- EvalShift CLI: <https://www.evalshift.dev/cli-llms-full.txt>
+- EvalShift SDK: <https://www.evalshift.dev/sdk-llms-full.txt>
+  (source of truth: [llms-full.txt](llms-full.txt) in this repo)
+- EvalShift GitHub Action (CI): <https://www.evalshift.dev/ci-llms-full.txt>
+
+## Install
+
+```bash
+pip install evalshift-sdk
+# or
+uv add evalshift-sdk
+```
+
+Optional LangChain integration (`EvalShiftCallbackHandler`):
+
+```bash
+pip install "evalshift-sdk[langchain]"   # adds langchain-core>=0.2
+```
+
+The adapter module is import-guarded, so the SDK stays dependency-free at runtime unless you opt in.
+
+> **Co-install note:** the SDK (import name `evalshift`) and the EvalShift CLI share the same
+> top-level import name. Keep them in separate virtual environments.
+
+## Usage
+
+```python
+from evalshift import capture
+
+@capture.agent(suite="support_agent", redact=True, tools=[])   # no-op unless EVALSHIFT_CAPTURE=1
+def handle_ticket(query): ...
+```
+
+> Full guide: [DOCS.md](DOCS.md) · dense LLM reference: <https://www.evalshift.dev/sdk-llms-full.txt> ·
+> locked design decisions: [docs/DECISIONS.md](docs/DECISIONS.md)
+
+## Keeping `captures/` bounded
+
+Capture writes one JSON file per sampled invocation, so `.evalshift/captures/` is kept bounded by
+default (no configuration needed): identical-input re-runs are de-duplicated, and each suite
+directory is capped at the **200 newest** captures (oldest evicted). Tune it with env vars — no code
+change required (precedence: an explicit `configure(...)` call > env var > built-in default):
+
+| Env var | Default | Meaning |
+| --- | --- | --- |
+| `EVALSHIFT_MAX_CAPTURES` | `200` | Max captures kept per suite dir. `0` / `none` / `unlimited` = uncapped. |
+| `EVALSHIFT_DEDUP` | `on` | Collapse identical-input captures (per-process). `off` to disable. |
+| `EVALSHIFT_CAPTURE_TTL` | off | Evict captures older than N **seconds**. |
+| `EVALSHIFT_SAMPLE_RATE` | off | Capture only this fraction of runs, e.g. `0.25`. |
+| `EVALSHIFT_DIR` | `.evalshift` | Capture root directory. |
+
+A malformed value falls back to the default (capture never crashes). To restore fully unbounded
+capture: `EVALSHIFT_MAX_CAPTURES=0 EVALSHIFT_DEDUP=off`. The same knobs are available in code via
+`configure(max_captures=..., dedup=..., capture_ttl=..., sample_rate=...)`.

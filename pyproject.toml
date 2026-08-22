@@ -1,0 +1,87 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "evalshift-sdk"
+version = "0.3.0"
+description = "In-process capture SDK for EvalShift: record agent behavior to disk for the evalshift CLI."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [{ name = "Lukas Babaliauskas" }]
+keywords = ["llm", "agents", "tracing", "observability", "evalshift", "capture"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+# Stdlib-only runtime (D-deps). Framework adapters land as optional extras (below).
+dependencies = []
+
+[project.optional-dependencies]
+# Framework adapters (Phase 7). The adapter module import-guards langchain so the SDK stays
+# stdlib-only at runtime unless a user opts in with `pip install evalshift-sdk[langchain]`.
+langchain = ["langchain-core>=0.2"]
+
+[project.urls]
+Homepage = "https://github.com/babaliauskas/evalshift-sdk"
+Repository = "https://github.com/babaliauskas/evalshift-sdk"
+Issues = "https://github.com/babaliauskas/evalshift-sdk/issues"
+
+[dependency-groups]
+# Dev/test only. `pydantic` is used by the vendored parity harness (tests/conformance),
+# never at runtime. `typing_extensions` lets the vendored CLI model run on py3.10.
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "mypy>=1.10",
+    "ruff>=0.5",
+    "pydantic>=2.5",
+    "typing_extensions>=4.10",
+    # Real end-to-end smoke for the LangChain adapter (Phase 7). Synthetic-callback unit tests
+    # need no langchain; this dev-dep backs the one `importorskip`-guarded real-chain test.
+    "langchain-core>=0.2",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/evalshift"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["src", "tests"]
+# Frozen verbatim mirror of the CLI model — exempt from lint + format churn (mypy still checks it).
+extend-exclude = ["tests/conformance/cli_models_vendored.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+plugins = ["pydantic.mypy"]
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+# Test frameworks (pytest marks) use dynamically typed decorators.
+module = "tests.*"
+disallow_untyped_decorators = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--strict-config"]
+# Async tests (Phase 5) run without per-test @pytest.mark.asyncio; the plugin self-registers
+# the `asyncio` marker so --strict-markers stays satisfied.
+asyncio_mode = "auto"
