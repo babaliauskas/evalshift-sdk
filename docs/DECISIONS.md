@@ -12,8 +12,8 @@ in one env clashes on the `evalshift` top-level package — tracked as **D1-foll
 later: CLI depends on SDK, or a `[cli]` extra). Not a v1 blocker; prod agents install the SDK only.
 
 ### D-py — `requires-python = ">=3.10"`
-Do **not** inherit the CLI's 3.14 floor — it would block prod adoption. 3.10 gives `contextvars`,
-modern typing, `match`. CI matrix covers 3.10–3.14.
+Do **not** inherit the CLI's floor (3.14 at the time; lowered to 3.11 in CLI 0.13.0) — it would
+block prod adoption. 3.10 gives `contextvars`, modern typing, `match`. CI matrix covers 3.10–3.14.
 
 ### D-deps — stdlib-only runtime
 Runtime imports limited to stdlib (`json`, `contextvars`, `dataclasses`, `hashlib`, `os`, `time`,
@@ -59,8 +59,8 @@ The Phase 0.5 parity test validates SDK-shaped JSON against a **frozen verbatim 
 `AgentTrace` models at `tests/conformance/cli_models_vendored.py`, not a live dependency on the CLI.
 
 - **Why:** keeps the parity test hermetic and keeps `pydantic` a dev-only dependency. A live
-  dev-dep on `evalshift-cli` would drag its `requires-python = ">=3.14"` floor into the SDK's dev
-  and CI environments, conflicting with D-py.
+  dev-dep on `evalshift-cli` would drag its `requires-python` floor (`>=3.14` at the time; `>=3.11`
+  since CLI 0.13.0) into the SDK's dev and CI environments, conflicting with D-py.
 - **Cost:** the copy can drift from the CLI. Mitigated by the drift-guard assertions in
   `test_parity.py` (event types + every field set + roles checked against the vendored model) and
   a header in the vendored file pointing at the source path. Re-sync on CLI contract changes.
