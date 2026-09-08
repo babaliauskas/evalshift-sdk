@@ -1,6 +1,6 @@
 # FROZEN MIRROR — do not edit by hand except to re-sync with the CLI.
-# Source: evalshift-cli/src/evalshift/traces/models.py (AgentTrace + TraceEvent union) and
-#         evalshift-cli/src/evalshift/captures/models.py (CaptureEnvelope).
+# Source: evalshift-cli/src/evalshift_cli/traces/models.py (AgentTrace + TraceEvent union) and
+#         evalshift-cli/src/evalshift_cli/captures/models.py (CaptureEnvelope).
 # License: the CLI source is AGPL-3.0-or-later; this mirror is distributed here under this
 #          repository's MIT license by Lukas Babaliauskas, the copyright holder of both
 #          codebases. Re-syncs must only pull from CLI code with the same sole authorship.
@@ -56,7 +56,7 @@ class ModelCallEvent(_BaseEvent):
     cost_usd: float = Field(default=0.0, ge=0.0)
     latency_ms: int = Field(default=0, ge=0)
     # Content-addressed pointer to the toolset sidecar (``sha256:<hex>``, see
-    # ``evalshift.captures.toolset.fingerprint_tools``) plus the cheap,
+    # ``evalshift_cli.captures.toolset.fingerprint_tools``) plus the cheap,
     # display-only tool-name list. Optional *here* so the parser accepts a
     # capture that predates per-call toolset capture -- the requirement that
     # they be present is enforced at promotion, not at parse time, where a

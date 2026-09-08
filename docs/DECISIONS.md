@@ -9,8 +9,10 @@ build order, not a published roadmap; `CHANGELOG.md` records what shipped in eac
 ### D-pkg — standalone repo, dist `evalshift-sdk`, import `evalshift`
 New repo `evalshift-sdk/`. Distribution name `evalshift-sdk`; **top-level import `evalshift`**
 (honors the spec's `import evalshift`). Co-installing the CLI (`evalshift`) and `evalshift-sdk`
-in one env clashes on the `evalshift` top-level package — tracked as **D1-followup** (unify
-later: CLI depends on SDK, or a `[cli]` extra). Not a v1 blocker; prod agents install the SDK only.
+in one env used to clash on the `evalshift` top-level package (**D1-followup**). Resolved
+2026-09-09 on the CLI side: the CLI's import package is `evalshift_cli` and it depends on
+`evalshift-sdk`, so the two co-install and `import evalshift` is always this SDK. This package
+is unchanged. Design: `evalshift-cli/docs/superpowers/specs/2026-09-09-namespace-collision-design.md`.
 
 ### D-py — `requires-python = ">=3.10"`
 Do **not** inherit the CLI's floor (3.14 at the time; lowered to 3.11 in CLI 0.13.0) — it would
@@ -354,8 +356,8 @@ policy in `docs/SCHEMA.md`.
   guarded for toolsets too).
 
 ## Open follow-ups (not blocking v1)
-- **D1-followup:** unify packaging so CLI + SDK co-install cleanly (CLI-depends-on-SDK, or a single
-  dist with a `[cli]` extra).
+- ~~**D1-followup:** unify packaging so CLI + SDK co-install cleanly~~ — resolved 2026-09-09 in
+  the CLI-depends-on-SDK form; see D-pkg.
 - **Outcome-aware dedup key** so a success can't suppress a later identical-input failure.
 - **Cross-process / on-disk dedup** (the v1 registry is per-process, in-memory).
 - **GC throttling** (every-Nth-write or a background thread) if profiling shows latency at large

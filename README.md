@@ -38,8 +38,9 @@ pip install "evalshift-sdk[langchain]"   # adds langchain-core>=0.2
 
 The adapter module is import-guarded, so the SDK stays dependency-free at runtime unless you opt in.
 
-> **Co-install note:** the SDK (import name `evalshift`) and the EvalShift CLI share the same
-> top-level import name. Keep them in separate virtual environments.
+> **Co-install note:** the EvalShift CLI (PyPI `evalshift`, import package `evalshift_cli`)
+> depends on this SDK, so both live in one environment and `pip install evalshift` brings the
+> SDK with it. Production agents that only record captures install `evalshift-sdk` alone.
 
 ## Usage
 

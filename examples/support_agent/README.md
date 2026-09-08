@@ -13,19 +13,20 @@ want the pipeline without a key.
 
 ## Run it
 
-The agent needs the **SDK** venv; the `evalshift` binary comes from the **CLI** venv (they clash
-on the `evalshift` import name, so keep them separate). Set `EVALSHIFT_DIR` so both agree on the
-data dir.
+The agent runs against this checkout's SDK (`uv run --project ../..`); the `evalshift` binary
+comes from the CLI (`pip install evalshift`, which depends on the released SDK — one
+environment can hold both; the split here only keeps the example on the source tree). Set
+`EVALSHIFT_DIR` so the agent and the CLI agree on the data dir.
 
 ```bash
 cd evalshift-sdk/examples/support_agent
 export EVALSHIFT_DIR="$PWD/.evalshift"
 
-# 1. capture (SDK venv). Writes .evalshift/captures/support_demo/cap_*.json plus the
+# 1. capture (this checkout's SDK). Writes .evalshift/captures/support_demo/cap_*.json plus the
 #    content-addressed toolset sidecar .evalshift/toolsets/<sha256>.json.
 EVALSHIFT_CAPTURE=1 uv run --project ../.. python agent.py
 
-# --- everything below runs in the CLI venv (the `evalshift` binary) ---
+# --- everything below uses the `evalshift` binary from the CLI ---
 
 evalshift capture list support_demo
 

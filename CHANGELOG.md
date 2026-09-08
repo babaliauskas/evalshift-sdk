@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Packaging: the EvalShift CLI (`evalshift` 0.14.0+) now depends on this
+  package and imports as `evalshift_cli`, so the two install into one
+  environment and `pip install evalshift` brings the SDK with it. The
+  "separate virtual environments" rule is gone from the README and DOCS.
+  No code change; `import evalshift` is, as before, this SDK.
+
 ## [0.3.0] - 2026-08-23
 
 First release from the public repository. Compared to 0.2.0 on PyPI:
