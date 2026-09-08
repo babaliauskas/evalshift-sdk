@@ -66,6 +66,7 @@ from evalshift import capture, record_model_call
 with capture.agent_session(
     suite="support_agent",
     redact=True,
+    tools=[],
     agent_input=messages,          # see "the messages-list convention" below
     conversation_id="conv_abc123",
     turn_index=2,

@@ -623,7 +623,7 @@ Requires the extra: `pip install "evalshift-sdk[langchain]"`.
 ```python
 from evalshift.adapters.langchain import EvalShiftCallbackHandler
 
-handler = EvalShiftCallbackHandler(suite="rag_agent", code_version="abc1234", tools=bound_tools)
+handler = EvalShiftCallbackHandler(suite="rag_agent", redact=True, code_version="abc1234", tools=bound_tools)
 
 chain.invoke({"question": "What is our refund policy?"}, config={"callbacks": [handler]})
 ```
