@@ -1,7 +1,8 @@
 # Decision records — evalshift-sdk
 
 Locked design decisions for the capture SDK. Each entry: decision, rationale, status.
-See `IMPLEMENTATION_PLAN.md` for the phased roadmap.
+Phase numbers in the headings and in the *Implemented in Phase N* notes are this repo's internal
+build order, not a published roadmap; `CHANGELOG.md` records what shipped in each release.
 
 ## Packaging & toolchain (locked, Phase 0)
 
@@ -32,6 +33,17 @@ TS/JS adapter deferred indefinitely.
 CLI default policy is **halt-and-flag** (a CLI concern). The SDK schema MUST store every recorded
 `tool_result` as a **fixture keyed by `call_id` + input hash** so CLI replay can look it up —
 capture doubles as a tool-result fixture. *Implemented in Phase 1 serialize.*
+
+**Status (2026-09-08) — the fixture table is written; CLI consumption is pending.** The SDK half
+is done: every `tool_result` event carries its `call_id`, its `result`, and a
+`metadata["evalshift"]["input_hash"]`, and `build_fixture_table` (`trace/serialize.py`) derives the
+`(call_id, input_hash) -> result` lookup from them. No CLI code reads it —
+`grep -rn fixture_table evalshift-cli/src` is empty — so the halt-and-flag policy above states an
+intent, not shipped behaviour: `evalshift run` makes one model call per example and scores the
+first tool-emitting round only (which is why `evalshift capture promote` / `capture sync` default
+to `--rounds first`). Teacher-forced multi-round replay, and the halt-and-flag-vs-substitute
+decision that goes with it, are Phase 2 of
+`evalshift-cli/docs/superpowers/plans/2026-09-08-external-review-response.md`.
 
 ### 2. Nondeterminism (N-sample)
 A CLI/run concern. The SDK records one observed run; no schema change.
