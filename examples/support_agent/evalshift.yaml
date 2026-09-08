@@ -1,5 +1,6 @@
-# EvalShift eval config for the SDK demo. The suite is produced by `evalshift capture promote`
-# (source: captured), not hand-authored -- that is the piece this demo proves.
+# EvalShift eval config for the SDK demo. The suite is not hand-authored: it is produced by
+# `evalshift capture sync` from the captures agent.py records (source: captured) -- that is the
+# piece this demo proves.
 version: 1
 
 # Hosted project slug is supplied at push time: `evalshift push <run> --project <org>/sdk-demo`.
@@ -9,8 +10,7 @@ prompts:
     detection: python_string
     path: prompts.py
     variable: AGENT_SYSTEM_PROMPT
-    variables: [query]
-    tools_path: tools.yaml   # makes this an agent prompt -> tool evaluators apply
+    variables: [query]   # matches the promoted cases' inputs key
 
 defaults:
   source_model: gemini-2.5-flash
@@ -18,13 +18,15 @@ defaults:
   concurrency: 2
   cache: false
 
-evaluators:
-  # Does the candidate model call the same tools the capture recorded as ground truth?
-  tool_selection:
-    - name: routing
-      mode: expected
+# No top-level tool evaluators on purpose: `evalshift capture sync` reads what this suite's
+# captures actually contain and writes its own tool_selection / tool_arguments block into the
+# managed suites: region below. The toolset each model is offered comes from the promoted case's
+# toolset_ref (a .evalshift/toolsets/<sha256>.json sidecar the SDK wrote), not from this file.
 
-suites:
-  support_demo:
-    source: captured
-    path: .evalshift/suites/support_demo/golden.jsonl
+# >>> evalshift suites (managed by `evalshift capture sync`) >>>
+# Regenerated on every sync, evaluators included: each suite is scored with what
+# its own captures contain, so a tool-free suite gets no tool evaluators. Hand
+# edits inside this region are overwritten -- set `managed: false` on a suite to
+# freeze its entry (sync then prints what it would have written instead).
+suites: {}
+# <<< evalshift suites <<<

@@ -1,13 +1,13 @@
 """Self-contained EvalShift SDK demo agent.
 
 A tiny *deterministic* support agent (no real LLM). Its only job is to emit a schema-valid
-capture that drives the full lifecycle: capture -> `evalshift capture promote` -> golden suite
--> `evalshift run` -> `evalshift push`.
+capture that drives the full lifecycle: capture -> `evalshift capture sync` -> golden suite
+-> `evalshift run` -> `evalshift push`. See README.md for the full walkthrough.
 
 Two things make a capture promotable:
-  * ``record_model_call(input={"query": ...})`` -- promote recovers the golden case ``inputs``
+  * ``record_model_call(input={"query": ...})`` -- promotion recovers the golden case ``inputs``
     from the first model call's input.
-  * ``@capture.tool`` calls -- promote turns the recorded tool calls into ``expected_tools``.
+  * ``@capture.tool`` calls -- promotion turns the recorded tool calls into ``expected_tools``.
 
 Run with capture on (writes ``.evalshift/captures/support_demo/cap_*.json``):
 
