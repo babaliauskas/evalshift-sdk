@@ -47,7 +47,7 @@ class _BaseEvent(_StrictModel):
 class RequestedToolCall(_StrictModel):
     """One tool call the model asked for in its response (not necessarily executed)."""
 
-    name: str
+    name: str = Field(min_length=1)
     arguments: dict[str, Any] = Field(default_factory=dict)
     call_id: str | None = None
 
