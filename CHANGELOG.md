@@ -15,6 +15,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "separate virtual environments" rule is gone from the README and DOCS.
   No code change; `import evalshift` is, as before, this SDK.
 
+### Added
+
+- `evalshift.capture.requested.extract_requested_tool_calls(response)` — a
+  stdlib-only helper that reads the tool calls a model *requested* out of an
+  OpenAI (Chat Completions or Responses), Anthropic, or Gemini response, as
+  `{name, arguments, call_id}` items for `record_model_call`. `[]` means the
+  model requested nothing; `None` means the value was not a recognised
+  response (or one of its calls was unreadable) — the two are not
+  interchangeable. Never raises, and imports no provider SDK.
+
 ## [0.3.0] - 2026-08-23
 
 First release from the public repository. Compared to 0.2.0 on PyPI:

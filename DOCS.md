@@ -352,6 +352,54 @@ messages = [
 
 The SDK does not validate this shape (`input` is `Any`), but following the convention makes each capture self-contained for downstream rendering and replay. Details: [docs/SCHEMA.md](docs/SCHEMA.md).
 
+### Extracting requested tool calls from a response
+
+Three different things get called "tools" around a model call: the ones the call was **offered**
+(`tools=`), the ones the model **requested** in its response, and the ones your app actually
+**executed** (`@capture.tool`). A stdlib-only helper derives the middle one from a provider
+response, so you never have to reshape it by hand:
+
+```python
+from evalshift.capture.requested import extract_requested_tool_calls
+
+response = client.messages.create(...)   # any provider
+
+record_model_call(
+    model_id="claude-sonnet-5",
+    tools=tools,
+    input=messages,
+    requested_tool_calls=extract_requested_tool_calls(response),
+)
+```
+
+It is not exported from the package root — import the full path above, like its sibling helpers in
+`evalshift.capture.toolset` and `evalshift.capture.generation`.
+
+It accepts an already-serialised response dict, an object exposing `model_dump()` / `to_dict()`, or
+the provider response object itself (walked by attribute — the SDK imports no provider SDK, not
+even guarded). Recognised shapes: OpenAI Chat Completions (`choices[0].message.tool_calls`, plus
+the deprecated `function_call` form), OpenAI Responses (`output[*]` items of
+`type: "function_call"`), Anthropic Messages (`content[*]` blocks of `type: "tool_use"`), and
+Gemini (`candidates[0].content.parts[*].functionCall`, or `function_call` from the python SDK's
+`to_dict()`). Only the first choice/candidate is read.
+
+Every item is exactly `{"name": str, "arguments": dict, "call_id": str | None}`, in response order
+(`call_id` is `None` where the provider has none — Gemini REST, legacy `function_call`).
+
+**`[]` and `None` are not interchangeable.**
+
+- `[]` — a recognised response in which the model requested no tools. A real, deliberate value:
+  "the model asked for nothing."
+- `None` — the value did not look like a provider response at all, or one of its tool calls had no
+  usable name, in which case the whole response is refused rather than reported one call short
+  (same rule as `normalize_tools`: a list that reads as complete but isn't is worse than no list).
+  Nothing is asserted about what the model requested — pass it straight through rather than
+  substituting `[]`.
+
+The helper never raises. Unparseable JSON `arguments`, JSON that parses to something other than an
+object, and an already-parsed `input`/`args` that is not an object each degrade to `{}` for that
+one call, logged at `debug`.
+
 ### Recording tool calls
 
 ```python
