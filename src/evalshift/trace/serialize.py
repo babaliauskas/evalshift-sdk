@@ -166,6 +166,9 @@ def _build_single_event(span: Span, seq: int, meta: dict[str, Any]) -> TraceEven
             # degrades to None via .get(), same as ModelCallEvent's own field default.
             toolset_ref=data.get("toolset_ref"),
             tools_offered=data.get("tools_offered"),
+            # Same pass-through contract (schema 2.1.0): capture/api.py normalises and stamps the
+            # list into span.data; absent means absent on the event, never an invented [].
+            requested_tool_calls=data.get("requested_tool_calls"),
             metadata=meta,
         )
     if span.kind == "retrieval":

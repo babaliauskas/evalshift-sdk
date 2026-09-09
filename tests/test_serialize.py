@@ -137,6 +137,52 @@ def test_model_call_empty_tools_offered_list_round_trips_as_empty_not_none() -> 
     assert mc["toolset_ref"] == "sha256:" + "0" * 64
 
 
+def test_model_call_requested_tool_calls_default_to_none_when_absent_from_span_data() -> None:
+    # Same pass-through contract as the toolset fields above: absent from span.data means absent
+    # on the event. The serializer never invents a requested-tool-call list (schema 2.1.0).
+    env = envelope_to_dict(
+        build_capture(_sample_tree(), suite="s", agent_input="hi", capture_id="cap_t")
+    )
+    mc = next(e for e in _events(env) if e["type"] == "model_call")
+    assert mc["requested_tool_calls"] is None
+
+
+def test_model_call_requested_tool_calls_round_trip_from_span_data() -> None:
+    tree = SpanTree()
+    m = tree.open_span(
+        "model_call",
+        span_id="m1",
+        start_ts=1.0,
+        data={
+            "model_id": "claude-opus-4-8",
+            "input": "hi",
+            "output": "yo",
+            "requested_tool_calls": [
+                {"name": "search", "arguments": {"q": "x"}, "call_id": "toolu_1"},
+            ],
+        },
+    )
+    tree.close_span(m, end_ts=1.5)
+    env = envelope_to_dict(build_capture(tree, suite="s", agent_input="hi", capture_id="cap_t"))
+    mc = next(e for e in _events(env) if e["type"] == "model_call")
+    assert mc["requested_tool_calls"] == [
+        {"name": "search", "arguments": {"q": "x"}, "call_id": "toolu_1"}
+    ]
+
+
+def test_model_call_empty_requested_tool_calls_round_trips_as_empty_not_none() -> None:
+    # "the model requested nothing" is a real, first-class value -- an empty list must not
+    # collapse to None on the way through data.get(...).
+    tree = SpanTree()
+    m = tree.open_span(
+        "model_call", span_id="m1", start_ts=1.0, data={"model_id": "m", "requested_tool_calls": []}
+    )
+    tree.close_span(m, end_ts=1.5)
+    env = envelope_to_dict(build_capture(tree, suite="s", agent_input="hi", capture_id="cap_t"))
+    mc = next(e for e in _events(env) if e["type"] == "model_call")
+    assert mc["requested_tool_calls"] == []
+
+
 def test_tool_span_serializes_to_call_and_result() -> None:
     env = envelope_to_dict(
         build_capture(_sample_tree(), suite="s", agent_input="hi", capture_id="cap_t")

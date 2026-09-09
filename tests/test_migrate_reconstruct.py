@@ -6,6 +6,7 @@ No pydantic here. The CLI-validity of a reloaded capture is proven in
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -194,6 +195,123 @@ def test_2_0_0_capture_round_trips_toolset_fields() -> None:
     assert isinstance(model_call, ModelCallEvent)
     assert model_call.toolset_ref == "sha256:" + "b" * 64
     assert model_call.tools_offered == ["search", "summarize"]
+
+
+# --- requested_tool_calls on ModelCallEvent (schema 2.1.0) -------------------------------------
+
+
+def test_model_call_requested_tool_calls_round_trip_through_to_jsonable_and_event_from_dict() -> (
+    None
+):
+    event = ModelCallEvent(
+        model_id="claude-opus-4-8",
+        sequence_index=0,
+        timestamp=datetime.fromisoformat(TS),
+        requested_tool_calls=[
+            {"name": "search", "arguments": {"q": "x"}, "call_id": "toolu_1"},
+        ],
+    )
+    data = to_jsonable(event)
+    assert data["requested_tool_calls"] == [
+        {"name": "search", "arguments": {"q": "x"}, "call_id": "toolu_1"}
+    ]
+
+    reloaded = event_from_dict(data)
+    assert reloaded == event
+
+
+def test_model_call_requested_tool_calls_defaults_to_none() -> None:
+    event = ModelCallEvent(
+        model_id="claude-opus-4-8", sequence_index=0, timestamp=datetime.fromisoformat(TS)
+    )
+    assert event.requested_tool_calls is None
+
+    reloaded = event_from_dict(to_jsonable(event))
+    assert reloaded == event
+
+
+def _envelope_json(version: str, event: dict[str, Any]) -> str:
+    """A hand-built capture envelope at ``version``, as JSON text (the on-disk shape)."""
+    return json.dumps(
+        {
+            "schema_version": version,
+            "capture_id": "cap_t",
+            "suite": "s",
+            "input_hash": "deadbeef",
+            "code_version": "",
+            "created_at": TS,
+            "trace": {
+                "run_id": "r1",
+                "prompt_id": "p1",
+                "example_id": "e1",
+                "role": "source",
+                "events": [event],
+            },
+        }
+    )
+
+
+def test_2_0_0_envelope_loads_with_requested_tool_calls_absent_as_none() -> None:
+    """The 2.0.0 -> 2.1.0 identity migration adds no value: a capture written before
+    ``requested_tool_calls`` existed reads back with the field ``None``, never fabricated."""
+    model_call = {
+        "type": "model_call",
+        "sequence_index": 0,
+        "timestamp": TS,
+        "metadata": {},
+        "model_id": "claude-opus-4-8",
+        "input": "hi",
+        "output": "yo",
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cost_usd": 0.0,
+        "latency_ms": 0,
+        "toolset_ref": "sha256:" + "b" * 64,
+        "tools_offered": ["search"],
+    }
+    reloaded = load_envelope(_envelope_json("2.0.0", model_call))
+
+    assert reloaded.schema_version == schema.SCHEMA_VERSION
+    event = reloaded.trace.events[0]
+    assert isinstance(event, ModelCallEvent)
+    assert event.requested_tool_calls is None
+    assert event.tools_offered == ["search"]
+
+
+def test_2_1_0_capture_round_trips_requested_tool_calls() -> None:
+    trace = AgentTrace(
+        run_id="r1",
+        prompt_id="p1",
+        example_id="e1",
+        role="source",
+        events=[
+            ModelCallEvent(
+                model_id="claude-opus-4-8",
+                sequence_index=0,
+                timestamp=datetime.fromisoformat(TS),
+                requested_tool_calls=[
+                    {"name": "issue_refund", "arguments": {"order_id": "12345"}, "call_id": None},
+                ],
+            )
+        ],
+    )
+    envelope = CaptureEnvelope(
+        schema_version=schema.SCHEMA_VERSION,
+        capture_id="cap_t",
+        suite="s",
+        input_hash="deadbeef",
+        code_version="",
+        created_at=TS,
+        trace=trace,
+    )
+
+    reloaded = load_envelope(dumps(envelope))
+
+    model_call = reloaded.trace.events[0]
+    assert isinstance(model_call, ModelCallEvent)
+    assert model_call.requested_tool_calls == [
+        {"name": "issue_refund", "arguments": {"order_id": "12345"}, "call_id": None}
+    ]
 
 
 # --- _parse_dt --------------------------------------------------------------------------------

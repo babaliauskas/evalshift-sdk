@@ -102,6 +102,12 @@ def test_current_version_is_supported() -> None:
     assert schema.SCHEMA_VERSION in schema.SUPPORTED_SCHEMA_VERSIONS
 
 
+def test_supported_versions_are_exactly_the_ones_upgrade_on_read_can_produce() -> None:
+    # 2.0.0 stays listed because the built-in identity migration still bridges it to 2.1.0; the
+    # 1.x versions were dropped with their migration when 2.0.0 shipped (docs/SCHEMA.md step 1).
+    assert schema.SUPPORTED_SCHEMA_VERSIONS == ("2.0.0", "2.1.0")
+
+
 def test_trace_roles_match() -> None:
     assert set(schema.TRACE_ROLES) == {"source", "target"}
     for role in schema.TRACE_ROLES:
@@ -137,6 +143,49 @@ def test_model_call_toolset_fields_default_to_none_on_vendored_model() -> None:
     assert isinstance(validated, ModelCallEvent)
     assert validated.toolset_ref is None
     assert validated.tools_offered is None
+
+
+# --- model_call requested_tool_calls (schema 2.1.0) ---
+
+
+def test_model_call_requested_tool_calls_accepted_by_vendored_model() -> None:
+    event = _event("model_call", 0)
+    event["requested_tool_calls"] = [
+        {"name": "search", "arguments": {"q": "x"}, "call_id": "toolu_1"},
+        {"name": "issue_refund", "arguments": {}, "call_id": None},
+    ]
+    validated = TraceEventAdapter.validate_python(event)
+    assert isinstance(validated, ModelCallEvent)
+    assert validated.requested_tool_calls is not None
+    assert [call.name for call in validated.requested_tool_calls] == ["search", "issue_refund"]
+    assert validated.requested_tool_calls[0].arguments == {"q": "x"}
+    assert validated.requested_tool_calls[0].call_id == "toolu_1"
+    assert validated.requested_tool_calls[1].call_id is None
+
+
+def test_model_call_requested_tool_call_defaults_arguments_and_call_id() -> None:
+    event = _event("model_call", 0)
+    event["requested_tool_calls"] = [{"name": "search"}]
+    validated = TraceEventAdapter.validate_python(event)
+    assert isinstance(validated, ModelCallEvent)
+    assert validated.requested_tool_calls is not None
+    assert validated.requested_tool_calls[0].arguments == {}
+    assert validated.requested_tool_calls[0].call_id is None
+
+
+def test_model_call_requested_tool_calls_default_to_none_on_vendored_model() -> None:
+    validated = TraceEventAdapter.validate_python(_event("model_call", 0))
+    assert isinstance(validated, ModelCallEvent)
+    assert validated.requested_tool_calls is None
+
+
+def test_model_call_requested_tool_call_rejects_extra_keys() -> None:
+    # RequestedToolCall is strict (extra="forbid") on the CLI side, exactly like every other trace
+    # model -- so the SDK must emit exactly {name, arguments, call_id} and nothing else.
+    event = _event("model_call", 0)
+    event["requested_tool_calls"] = [{"name": "search", "index": 0}]
+    with pytest.raises(ValidationError):
+        TraceEventAdapter.validate_python(event)
 
 
 # --- D-5b: schema_version lives in the capture envelope, never in the trace ---

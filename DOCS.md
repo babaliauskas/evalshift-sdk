@@ -95,7 +95,7 @@ One capture file appears at `.evalshift/captures/support_demo/cap_<hex>.json` (r
 
 ```json
 {
-  "schema_version": "2.0.0",
+  "schema_version": "2.1.0",
   "capture_id": "cap_203ce5041fe042298d0e3b5b9910e178",
   "suite": "support_demo",
   "input_hash": "3829825837ffeb3415bd0e448838ab18a928378b87175fba1cb053fda13b4100",
@@ -116,6 +116,7 @@ One capture file appears at `.evalshift/captures/support_demo/cap_<hex>.json` (r
         "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "latency_ms": 0,
         "toolset_ref": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
         "tools_offered": [],
+        "requested_tool_calls": null,
         "timestamp": "2026-07-20T22:22:31.081939+00:00",
         "metadata": {"evalshift": {"span_id": "mc_…", "start_ts": 1784586151.081939, "end_ts": 1784586151.081939}}
       },
@@ -202,7 +203,7 @@ Each capture is one JSON file: an **envelope** wrapping a trace.
 
 | Envelope key | Meaning |
 |---|---|
-| `schema_version` | Envelope schema version (currently `"2.0.0"`) |
+| `schema_version` | Envelope schema version (currently `"2.1.0"`) |
 | `capture_id` | Unique id, `cap_<hex>`; also the file name |
 | `suite` | The suite you passed to `@capture.agent` / `agent_session` — the grouping unit on disk |
 | `input_hash` | SHA-256 of the agent's bound input (the raw input itself is not stored at the envelope level); dedup key |
@@ -680,7 +681,7 @@ from evalshift import register_migration
 register_migration("1.1.0", "1.2.0", my_upgrade_fn, description="add foo field")
 ```
 
-`SCHEMA_VERSION` (currently `"2.0.0"`) is the version this SDK writes. Policy details: [docs/SCHEMA.md](docs/SCHEMA.md).
+`SCHEMA_VERSION` (currently `"2.1.0"`) is the version this SDK writes. Policy details: [docs/SCHEMA.md](docs/SCHEMA.md).
 
 ---
 
@@ -892,7 +893,7 @@ Base class of the six typed read errors (see [Reading captures](#reading-capture
 
 ### `SCHEMA_VERSION` / `__version__`
 
-`SCHEMA_VERSION` — the envelope schema version this SDK writes (`"2.0.0"`). `__version__` — the package version (`"0.3.0"`).
+`SCHEMA_VERSION` — the envelope schema version this SDK writes (`"2.1.0"`). `__version__` — the package version (`"0.3.0"`).
 
 ### `EvalShiftCallbackHandler`
 

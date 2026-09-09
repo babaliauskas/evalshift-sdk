@@ -62,9 +62,10 @@ are masked in `build_capture` **before** serialization, so trace events and the 
 may still contain) is documented in `docs/REDACTION.md`. See D-4a / D-4b for the policy choices.
 
 ### 5. Trace `schema_version`
-SDK trace schema is versioned independently of the CLI artifact version; `SCHEMA_VERSION = "1.0.0"`
-frozen in `src/evalshift/trace/schema.py`. *Migration path implemented in Phase 8 — see D-8 and
-`docs/SCHEMA.md`.* See D-5b for where the version is emitted.
+SDK trace schema is versioned independently of the CLI artifact version and frozen in
+`src/evalshift/trace/schema.py` (`SCHEMA_VERSION`, `"2.1.0"` today; it was `"1.0.0"` when this
+decision was taken). *Migration path implemented in Phase 8 — see D-8 and `docs/SCHEMA.md`.* See
+D-5b for where the version is emitted.
 
 ## Phase-0 implementation decisions (confirmed this session)
 
@@ -255,6 +256,15 @@ policy in `docs/SCHEMA.md`.
   `NoMigrationPathError` a missing registry edge would otherwise leak. A missing edge *within* a
   major still raises the raw `NoMigrationPathError`, unchanged — that's a registry bug, not an
   obsolete capture.
+- **A MINOR bump registers an identity edge, and that edge is not decorative.** *(Added at schema
+  2.1.0.)* `2.1.0` added the additive `requested_tool_calls` field to `model_call` (D-requested)
+  and registers `_migrate_2_0_0_to_2_1_0`, a no-op step, in `_register_builtins()` — the registry's
+  only built-in edge. `_build_chain` walks by exact `from_version`, so a version with no outgoing
+  edge is simply unreachable; without this step every 2.0.0 capture would raise
+  `NoMigrationPathError` on read. The step deliberately does **not** default the new field to `[]`:
+  absent stays absent and reconstructs as `None` ("not recorded"), because fabricating `[]` would
+  assert the model requested no tools on every pre-2.1.0 call — the same dishonesty the previous
+  bullet refused for `tools_offered`. `SUPPORTED_SCHEMA_VERSIONS` is therefore `("2.0.0", "2.1.0")`.
 - **Linear chain, forward-only.** One registered outgoing step per version
   (`register_migration` / `reset_migrations`), walked from source to current; no downgrade path. A
   missing step raises `NoMigrationPathError`. The migrated input is never mutated (a deep copy is
@@ -354,6 +364,42 @@ policy in `docs/SCHEMA.md`.
   different toolsets, neither one's `tools_offered` ever attributed to the other's call; the same
   contextvar-bleed class the sibling/nested `parent_call_id` tests above it already guard, now
   guarded for toolsets too).
+
+## Model-requested tool calls (confirmed this session)
+
+### D-requested — requested ≠ executed; both are recorded
+Schema 2.1.0 adds `requested_tool_calls` to `model_call` events. A `model_call` now carries three
+different, non-interchangeable facts about tools:
+
+| field | question | source |
+| --- | --- | --- |
+| `tools_offered` / `toolset_ref` | what *could* be called | the `tools=` passed at the call (D-toolset) |
+| `requested_tool_calls` | what the model *asked* to call | the provider's response |
+| the `tool_call` / `tool_result` events | what the app *actually ran* | `@capture.tool` |
+
+- **Why both, rather than deriving one from the other:** they diverge routinely, and every
+  divergence is a real signal. An app can ignore a requested call (a guard rejects it, a router
+  drops it), run a tool the model never asked for (a hard-coded pre-fetch), request two and execute
+  one, or crash between the response and dispatch. Inferring "requested" from the executed
+  `tool_call` events erases exactly the cases worth evaluating — a model that asks for the wrong
+  tool looks identical to an app that refused to run the right one. The CLI prefers
+  `requested_tool_calls` as ground truth for tool-selection scoring when it is present, and falls
+  back to the executed calls when it is not; that fallback is only sound because "not recorded"
+  (`None`) is distinguishable from "the model requested nothing" (`[]`).
+- **Shape:** each item is exactly `{name, arguments, call_id}` — a strict `RequestedToolCall`
+  model on the CLI side (`extra="forbid"`, `arguments` defaults to `{}`, `call_id` to `None`), a
+  plain `dict` in the SDK's stdlib dataclass (`list[dict[str, Any]] | None`), which needs no nested
+  dataclass at runtime (D-deps). `call_id` is the provider's own id (Anthropic `toolu_…`, OpenAI
+  `call_…`) where one exists, so a reader can line a requested call up against the `tool_call`
+  event the app emitted for it; it is `None` for providers that don't issue one.
+- **Ordering vs. the CLI.** The CLI's trace models are `extra="forbid"`, so it must accept the
+  field before the SDK writes it. The CLI added it first; the SDK emits it from schema 2.1.0 on.
+  The field sits immediately after `tools_offered` in `trace/models.py`,
+  `schema.EVENT_FIELDS["model_call"]`, and the vendored CLI mirror, mirroring the CLI class body.
+- **Verified by:** `tests/test_serialize.py` and `tests/test_migrate_reconstruct.py` (the
+  pass-through and round-trip, plus a 2.0.0 envelope loading with the field `None`),
+  `tests/test_migrate.py` (the built-in identity edge), and `tests/conformance/test_parity.py`
+  (the vendored strict `RequestedToolCall`).
 
 ## Open follow-ups (not blocking v1)
 - ~~**D1-followup:** unify packaging so CLI + SDK co-install cleanly~~ — resolved 2026-09-09 in

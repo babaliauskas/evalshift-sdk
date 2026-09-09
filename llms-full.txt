@@ -1,7 +1,7 @@
 # evalshift-sdk — complete reference for AI tools
 
 Canonical hosted copy: https://www.evalshift.dev/sdk-llms-full.txt
-Package: evalshift-sdk (PyPI) | import: evalshift | version: 0.3.0 | schema: 2.0.0
+Package: evalshift-sdk (PyPI) | import: evalshift | version: 0.3.0 | schema: 2.1.0
 Python: >=3.10 | runtime deps: none (stdlib only) | typed (py.typed) | license: MIT
 Install: pip install evalshift-sdk   (or: uv add evalshift-sdk)
 Optional extra: pip install "evalshift-sdk[langchain]" -> langchain-core>=0.2
@@ -214,9 +214,10 @@ MigrationError — base of all read errors. Subclasses (import from evalshift.tr
   NoMigrationPathError          no registered chain reaches the target version
   UnknownEventTypeError         event "type" not a known discriminator
 
-SCHEMA_VERSION = "2.0.0" (envelope schema this SDK writes; supported: "2.0.0" -- 2.0.0 registers
-  no migration from any 1.x capture: ObsoleteSchemaVersionError on read, by design, see
-  docs/SCHEMA.md)
+SCHEMA_VERSION = "2.1.0" (envelope schema this SDK writes; supported: "2.0.0", "2.1.0" -- 2.1.0
+  registers an identity migration 2.0.0 -> 2.1.0 for its additive requested_tool_calls field, and
+  2.0.0 registers no migration from any 1.x capture: ObsoleteSchemaVersionError on read, by
+  design, see docs/SCHEMA.md)
 __version__ = "0.3.0"
 
 evalshift.adapters.langchain.EvalShiftCallbackHandler(*, suite: str, redact: Redactor | bool,
@@ -300,10 +301,11 @@ Toolset sidecars: <base>/toolsets/<fingerprint-hex-no-prefix>.json (see ToolsetS
 
 Envelope keys (unchanged since schema 1.1.0, in order): schema_version, capture_id, suite,
 input_hash, code_version, created_at (ISO-8601 UTC), trace, conversation_id, turn_index,
-parent_capture_id (last three optional, null for standalone captures; added in 1.1.0). Schema
-2.0.0 (current) changed a TRACE-internal field set (model_call gained toolset_ref/tools_offered,
-below), not this envelope key list -- a schema_version bump is still owed for a trace-internal
-field addition even when ENVELOPE_KEYS itself is untouched (docs/SCHEMA.md).
+parent_capture_id (last three optional, null for standalone captures; added in 1.1.0). Schemas
+2.0.0 and 2.1.0 (current) each changed a TRACE-internal field set (model_call gained
+toolset_ref/tools_offered, then requested_tool_calls, below), not this envelope key list -- a
+schema_version bump is still owed for a trace-internal field addition even when ENVELOPE_KEYS
+itself is untouched (docs/SCHEMA.md).
 
 trace (AgentTrace, the frozen CLI contract): run_id, prompt_id, example_id, role
 ("source"|"target"), events. Capture-time defaults: run_id=example_id=capture_id,
@@ -313,7 +315,11 @@ Event types and own fields (all events also carry: type, sequence_index, timesta
   model_call:  model_id, input, output, input_tokens, output_tokens, cost_usd, latency_ms,
                toolset_ref (str|None, "sha256:<hex>"), tools_offered (list[str]|None) -- both
                added in schema 2.0.0; None on a capture written before per-call toolset capture
-               existed, real values (tools_offered=[] included) on every capture written after
+               existed, real values (tools_offered=[] included) on every capture written after;
+               requested_tool_calls (list[{name, arguments, call_id}]|None) -- added in schema
+               2.1.0, what the MODEL ASKED FOR in its response, as opposed to tools_offered (what
+               it was allowed to ask for) and the tool_call events (what the app actually ran).
+               None = not recorded; [] = the model requested no tools.
   tool_call:   name, arguments, call_id, parent_call_id
   tool_result: name, call_id, result, error
   retrieval:   source, query, documents
@@ -326,9 +332,11 @@ input_hash (SHA-256 of the redacted tool arguments; feeds the (call_id, input_ha
 replay fixture table).
 
 Forward compat on read: older, same major -> migrate up chain; older, different (older) major
-with no registered bridge -> refuse (ObsoleteSchemaVersionError) -- schema 2.0.0 is the concrete
-case: it registers NO migration from any 1.x capture (there is no honest value tools_offered can
-take for one), so a 1.x capture raises ObsoleteSchemaVersionError, not a silent upgrade; same
+with no registered bridge -> refuse (ObsoleteSchemaVersionError). Both cases are concrete: a
+2.0.0 capture upgrades to 2.1.0 through a registered identity edge (requested_tool_calls stays
+absent -> None, never fabricated as []), while 2.0.0 registers NO migration from any 1.x capture
+(there is no honest value tools_offered can take for one), so a 1.x capture raises
+ObsoleteSchemaVersionError, not a silent upgrade; same
 version -> as-is; newer minor/patch (same major) -> warn + best-effort read, unknown fields
 dropped; newer major -> refuse (UnsupportedSchemaVersionError).
 

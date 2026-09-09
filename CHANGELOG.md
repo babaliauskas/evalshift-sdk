@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Trace schema `2.1.0`: `model_call` events carry an optional
+  `requested_tool_calls` list of `{name, arguments, call_id}` items — what
+  the *model asked to call* in its response, as distinct from `tools_offered`
+  (what it was allowed to call) and the `tool_call` events (what the app
+  actually ran). `null` means "not recorded", `[]` means "the model requested
+  no tools"; see `docs/DECISIONS.md` D-requested.
+
 ### Changed
+
+- **Schema `2.0.0` → `2.1.0`** (MINOR, additive). `SUPPORTED_SCHEMA_VERSIONS`
+  is now `("2.0.0", "2.1.0")` and a built-in identity migration upgrades a
+  2.0.0 capture on read — `requested_tool_calls` stays absent (reading back as
+  `None`) rather than being fabricated as `[]`. 1.x captures are still refused
+  with `ObsoleteSchemaVersionError`, unchanged.
 
 - Packaging: the EvalShift CLI (`evalshift` 0.14.0+) now depends on this
   package and imports as `evalshift_cli`, so the two install into one
