@@ -34,6 +34,11 @@ dependencies = []
 # Framework adapters (Phase 7). The adapter module import-guards langchain so the SDK stays
 # stdlib-only at runtime unless a user opts in with `pip install evalshift-sdk[langchain]`.
 langchain = ["langchain-core>=0.2"]
+# Provider client wrappers (D-wrappers). Each module import-guards its SDK the same way; the
+# wrappers only proxy a client the user already built, so the pins are floors, not versions.
+openai = ["openai>=1.40"]
+anthropic = ["anthropic>=0.40"]
+google-genai = ["google-genai>=1.0"]
 
 [project.urls]
 Homepage = "https://github.com/babaliauskas/evalshift-sdk"
@@ -53,6 +58,11 @@ dev = [
     # Real end-to-end smoke for the LangChain adapter (Phase 7). Synthetic-callback unit tests
     # need no langchain; this dev-dep backs the one `importorskip`-guarded real-chain test.
     "langchain-core>=0.2",
+    # Same for the provider wrappers (D-wrappers): synthetic-response unit tests need nothing;
+    # these back the one real-client smoke test per wrapper (offline, stub transport).
+    "openai>=1.40",
+    "anthropic>=0.40",
+    "google-genai>=1.0",
 ]
 
 [tool.hatch.build.targets.wheel]

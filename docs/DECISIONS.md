@@ -461,6 +461,52 @@ different, non-interchangeable facts about tools:
   `tests/conformance/test_capture_conformance.py` (an end-to-end written capture carrying
   provider-shaped items still validating against the vendored CLI model).
 
+## Provider client wrappers (confirmed 2026-09-09)
+
+### D-wrappers — proxies over the user's client, one `model_call` per request
+`evalshift.adapters.openai.wrap_openai(client)`, `adapters.anthropic.wrap_anthropic(client)` and
+`adapters.genai.wrap_genai(client)` return a drop-in proxy over a client the user already
+constructed. The proxy forwards every attribute and replaces only the completion methods
+(`chat.completions.create` / `responses.create`; `messages.create` / `messages.stream`;
+`models.generate_content` and its async/stream forms). Each intercepted call records exactly one
+`model_call` through `record_model_call`, populated with `model_id`, `tools`, `input`, `output`,
+`input_tokens`, `output_tokens`, `latency_ms`, `generation_config` (the raw kwargs, allow-listed
+by `GENERATION_KEYS`) and `requested_tool_calls` (via `extract_requested_tool_calls`).
+
+- **Wrap the instance, never the module.** Monkeypatching `openai.resources...` would affect every
+  client in the process, including ones the user never meant to capture, and would break the
+  moment two libraries patch the same method. A proxy is local to the object the user handed us.
+- **Record-only, session-owned.** A wrapper opens no agent session and takes no `suite` /
+  `redact`: the user still marks the boundary with `@capture.agent` (which is where masking is
+  chosen, D-4c). Outside a session the wrapper is inert. This keeps one capture point per
+  capture, and lets a wrapped client be shared between captured and uncaptured code paths.
+- **`tools` is always asserted per call.** A wrapper sees exactly what the provider was sent, so
+  it records the call's `tools` kwarg, or `[]` when absent — never `None` (inherit the session's).
+  A session-level toolset cannot be what the model was offered if the request carried none.
+- **Fail-open, and the real call is never guarded.** The provider call's exceptions propagate
+  untouched; a wrapper fault degrades to "not recorded". A failed request records nothing
+  (`model_call` has no error slot; the agent-level error event still fires).
+- **Streaming: wrap the iterator.** The returned stream is a proxy that forwards every attribute
+  and records once when the stream is exhausted, closed, or fails — with whatever output had
+  arrived, and usage from the final chunk when the provider sends one. A stream that is simply
+  abandoned records nothing; there is no hook to know the caller is done.
+- **`cost_usd` stays 0 in the SDK.** Pricing belongs to the CLI (`utils/cost.py`, litellm's
+  price table) and is applied at promote/report time (plan Task 5.5). A model with no price entry
+  (local / self-hosted) legitimately stays at 0.
+- **Extras:** `evalshift-sdk[openai]`, `[anthropic]`, `[google-genai]`. Each module import-guards
+  its SDK; the runtime stays stdlib-only (D-deps). The wrappers never `isinstance` a provider
+  type — shapes are duck-typed, as `capture/toolset.py` and `capture/requested.py` already do.
+- **Open-source models need no wrapper of their own.** Ollama, vLLM, llama.cpp server, LM Studio,
+  TGI, Together, Groq, Fireworks and OpenRouter serve OpenAI-compatible endpoints, so
+  `wrap_openai(OpenAI(base_url=...))` covers them unchanged; `model_id` is whatever string the
+  caller passed and a server that omits `usage` records zero tokens (never gates promotion).
+  Native non-OpenAI clients (the `ollama` package, in-process transformers) keep using
+  `record_model_call` / `capture.model_call`. Replaying open-model *targets* is the CLI's job via
+  litellm prefixes and is independent of the wrappers.
+- **Shared base:** `adapters/_wrap.py` holds the proxy, timing, stream proxies and fail-open
+  plumbing; a provider module contributes only `describe` (kwargs → `CallSpec`), `complete`
+  (response → `Completion`), `is_stream` and `on_chunk` / `on_stream_end`.
+
 ## Open follow-ups (not blocking v1)
 - ~~**D1-followup:** unify packaging so CLI + SDK co-install cleanly~~ — resolved 2026-09-09 in
   the CLI-depends-on-SDK form; see D-pkg.
