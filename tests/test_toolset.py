@@ -576,13 +576,13 @@ def test_empty_toolset_vector_matches_pinned_fingerprint() -> None:
 
 
 def _strict_openai(strict: Any) -> dict[str, Any]:
-    tool = json.loads(json.dumps(OPENAI_TOOL))
+    tool: dict[str, Any] = json.loads(json.dumps(OPENAI_TOOL))
     tool["function"]["strict"] = strict
     return tool
 
 
 def _strict_anthropic(strict: Any) -> dict[str, Any]:
-    tool = json.loads(json.dumps(ANTHROPIC_TOOL))
+    tool: dict[str, Any] = json.loads(json.dumps(ANTHROPIC_TOOL))
     tool["strict"] = strict
     return tool
 
