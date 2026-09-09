@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any
+from typing import Any, TypeVar, cast
 
 from evalshift import safety
 from evalshift.adapters._wrap import (
@@ -50,6 +50,8 @@ from evalshift.adapters._wrap import (
 )
 from evalshift.capture.generation import jsonable
 from evalshift.capture.requested import extract_requested_tool_calls
+
+C = TypeVar("C")
 
 #: ``StreamState.scratch`` key under which in-flight ``tool_use`` blocks are kept, by block index.
 _TOOL_USE = "tool_use"
@@ -306,7 +308,7 @@ class _AnthropicProxy(ClientProxy):
         return _MessagesProxy(self._target.messages)
 
 
-def wrap_anthropic(client: Any) -> ClientProxy:
+def wrap_anthropic(client: C) -> C:
     """Wrap an ``anthropic.Anthropic`` / ``anthropic.AsyncAnthropic`` instance for capture.
 
     Returns a proxy that forwards everything to ``client`` and records one ``model_call`` for
@@ -314,9 +316,10 @@ def wrap_anthropic(client: Any) -> ClientProxy:
     inside an active capture session (``@capture.agent`` ...). Outside a session it is inert.
     The proxy is not an instance of the client's class; use
     :func:`evalshift.adapters._wrap.unwrap` to get the real client back. See the module
-    docstring for what is recorded and what is out of scope.
+    docstring for what is recorded and what is out of scope. Typed as returning the client's
+    own type purely for editor ergonomics (like ``wrap_openai`` / ``wrap_genai``).
     """
-    return _AnthropicProxy(client)
+    return cast(C, _AnthropicProxy(client))
 
 
 __all__ = ["wrap_anthropic"]

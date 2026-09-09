@@ -590,7 +590,7 @@ async def test_async_stream_helper_records_on_exit(
     capturing: Path, read_captures: CaptureReader
 ) -> None:
     messages = _AsyncMessages()
-    proxy = wrap_anthropic(_Client(messages))
+    proxy: Any = wrap_anthropic(_Client(messages))  # the fake types its stream() as sync
 
     @capture.agent(suite="anthropic", redact=False, tools=[])
     async def agent() -> str:
