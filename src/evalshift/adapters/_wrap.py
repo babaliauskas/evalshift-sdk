@@ -277,7 +277,11 @@ def instrument(original: Callable[..., Any], inst: Instrumentation) -> Callable[
         _record_response(spec, response, inst, start)
         return response
 
-    if inspect.iscoroutinefunction(original):
+    # ``inspect.unwrap`` sees through ``functools.wraps`` decorators: the Stainless-generated
+    # SDKs (openai, anthropic) wrap their async ``create`` in a *sync* ``@required_args``
+    # wrapper, which ``iscoroutinefunction`` alone reports as sync. A plain ``def`` that hands
+    # back an awaitable anyway is caught below in ``wrapper``.
+    if inspect.iscoroutinefunction(inspect.unwrap(original)):
 
         @functools.wraps(original)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
