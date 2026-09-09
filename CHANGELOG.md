@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Provider client wrappers: `evalshift.adapters.openai.wrap_openai(client)`,
+  `evalshift.adapters.anthropic.wrap_anthropic(client)` and
+  `evalshift.adapters.genai.wrap_genai(client)` return a drop-in proxy over a
+  client you already built. Inside a capture session every intercepted call
+  (`chat.completions.create` / `responses.create`; `messages.create` /
+  `messages.stream`; `models.generate_content[_stream]` and the `aio` twins —
+  sync, async and streaming) records one `model_call` with `model_id`, the
+  tools offered, `requested_tool_calls`, `input` (always a messages-style list,
+  system prompts folded in as a leading `system` message), `output`, token
+  usage, latency and the allow-listed generation settings. Nothing is
+  monkeypatched, the real call is never guarded, and the wrapper is inert
+  outside a session. New optional extras `[openai]`, `[anthropic]`,
+  `[google-genai]`; the runtime stays stdlib-only. OpenAI-compatible servers
+  (Ollama, vLLM, Groq, OpenRouter ...) are covered by `wrap_openai` with a
+  `base_url`. `cost_usd` stays 0 — the CLI prices tokens at promote time. See
+  `docs/DECISIONS.md` D-wrappers.
 - `generation_config` records three more keys: `tool_choice`,
   `parallel_tool_calls`, and `tool_config` (Gemini's spelling of `tool_choice`),
   so `evalshift capture sync` can replay a case under the same tool-use

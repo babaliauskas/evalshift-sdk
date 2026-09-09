@@ -21,9 +21,10 @@ The EvalShift SDK is an **in-process capture SDK** for AI agents. You install it
 7. [Redaction](#redaction)
 8. [Async and concurrency](#async-and-concurrency)
 9. [LangChain integration](#langchain-integration)
-10. [Reading captures programmatically](#reading-captures-programmatically)
-11. [API reference](#api-reference)
-12. [Troubleshooting / FAQ](#troubleshooting--faq)
+10. [Provider client wrappers](#provider-client-wrappers)
+11. [Reading captures programmatically](#reading-captures-programmatically)
+12. [API reference](#api-reference)
+13. [Troubleshooting / FAQ](#troubleshooting--faq)
 
 ---
 
@@ -41,7 +42,15 @@ Optional LangChain integration:
 pip install "evalshift-sdk[langchain]"   # adds langchain-core>=0.2
 ```
 
-The LangChain adapter module is import-guarded: importing `evalshift.adapters.langchain` without the extra installed does not fail — the SDK stays dependency-free at runtime.
+Optional provider client wrappers (see [Provider client wrappers](#provider-client-wrappers)):
+
+```bash
+pip install "evalshift-sdk[openai]"        # openai>=1.40
+pip install "evalshift-sdk[anthropic]"     # anthropic>=0.40
+pip install "evalshift-sdk[google-genai]"  # google-genai>=1.0
+```
+
+Every adapter module is import-guarded: importing `evalshift.adapters.langchain` (or `.openai`, `.anthropic`, `.genai`) without the matching extra installed does not fail — the SDK stays dependency-free at runtime.
 
 > **Co-install note:** the EvalShift CLI (PyPI `evalshift`, import package `evalshift_cli`) depends on this SDK, so both live in one environment and `pip install evalshift` brings the SDK with it. Production agents that only record captures install `evalshift-sdk` alone.
 
@@ -223,6 +232,7 @@ There are three ways to wrap agent calls. They share the same pipeline and confi
 1. **Decorators** — `@capture.agent` + `@capture.tool` + `record_model_call`: least intrusive, best for a stable agent entry point.
 2. **Context managers** — `capture.agent_session` / `agent_session_async`: for inline instrumentation and multi-turn conversations where per-call values change.
 3. **LangChain callback handler** — zero decorators on your code; see [LangChain integration](#langchain-integration).
+4. **Provider client wrappers** — keep `@capture.agent` on the boundary and let a wrapped `openai` / `anthropic` / `google-genai` client record every model call for you; see [Provider client wrappers](#provider-client-wrappers).
 
 ### The agent boundary
 
@@ -731,6 +741,61 @@ Behavior:
 
 ---
 
+## Provider client wrappers
+
+Requires the matching extra: `pip install "evalshift-sdk[openai]"`, `"[anthropic]"`, or `"[google-genai]"`.
+
+If your agent calls a provider SDK directly, you do not have to write `record_model_call` by hand. Wrap the client instance once; every intercepted call made inside an active capture session (`@capture.agent`, `agent_session`, ...) records one `model_call` with `model_id`, the tools offered, the tool calls the model requested, `input`, `output`, token usage, latency and the allow-listed generation settings. Outside a session the wrapper is inert.
+
+```python
+from openai import OpenAI
+from evalshift import capture
+from evalshift.adapters.openai import wrap_openai
+
+client = wrap_openai(OpenAI())          # or AsyncOpenAI(); use the proxy exactly like the client
+
+@capture.agent(suite="support_agent", redact=True, tools=[])
+def handle_ticket(query: str) -> str:
+    r = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": query}])
+    return r.choices[0].message.content or ""
+```
+
+```python
+from anthropic import Anthropic
+from evalshift.adapters.anthropic import wrap_anthropic
+
+client = wrap_anthropic(Anthropic())    # or AsyncAnthropic()
+```
+
+```python
+from google import genai
+from evalshift.adapters.genai import wrap_genai
+
+client = wrap_genai(genai.Client())     # sync and client.aio both covered
+```
+
+What is intercepted (everything else is forwarded untouched and not recorded):
+
+| Wrapper | Intercepted | Not recorded (still works) |
+| --- | --- | --- |
+| `wrap_openai` | `chat.completions.create`, `responses.create` — sync, async, `stream=True` | `parse` / `beta`, `with_raw_response`, the `.stream()` helper context managers, embeddings, audio, images, files |
+| `wrap_anthropic` | `messages.create` (sync, async, `stream=True`), `messages.stream` (sync and async managers) | `beta`, `messages.batches`, `messages.count_tokens`, `with_raw_response` |
+| `wrap_genai` | `models.generate_content`, `models.generate_content_stream`, and both under `client.aio` | `chats`, `embed_content`, `count_tokens`, `files`, `caches`, `batches`, `tunings`, `live` |
+
+Behaviour, shared by all three (design: [docs/DECISIONS.md](docs/DECISIONS.md) D-wrappers):
+
+- **Wraps the instance, never the module.** Nothing is monkeypatched; a client you did not wrap is untouched. The proxy is not an `isinstance` of the client's class — `evalshift.adapters._wrap.unwrap(proxy)` returns the real client if you need one.
+- **Record-only.** The wrapper opens no session and takes no `suite` / `redact`; the boundary and the masking choice stay on `@capture.agent`. A wrapped client can be shared between captured and uncaptured code paths.
+- **`tools` is asserted per call.** The call's `tools` kwarg (Gemini: `config.tools`) is recorded, or `[]` when the request carried none — the session's `tools=` is never inherited, because a wrapper knows exactly what the provider was sent. Callables passed to Gemini for automatic function calling are declared through the SDK's own converter; a built-in-only tool such as `google_search` normalises to nothing and leaves the toolset unstamped.
+- **Fail-open, and the real call is never guarded.** Provider exceptions propagate exactly as before; a wrapper fault means "this call was not recorded", never a broken client. A request that raised records nothing.
+- **Streaming: the returned stream is a proxy** that forwards every attribute and records once when the stream is exhausted, closed, or fails — with whatever output had arrived. Usage comes from the final chunk when the provider sends one (OpenAI chat streams need `stream_options={"include_usage": True}`, otherwise tokens stay 0). Anthropic's `messages.stream` manager records on `__exit__` from `get_final_message()`. A stream simply abandoned records nothing.
+- **`input` is always a messages-style list**, so the CLI recovers system prompt, history and current turn the same way for every provider: Anthropic's `system`, the Responses API's `instructions` and Gemini's `system_instruction` become a leading `{"role": "system"}` message; Gemini `Content`/`Part` values are folded into role-tagged messages, function calls into `tool_calls` and function responses into `tool` messages. Server-held state (OpenAI `previous_response_id` / `conversation`) is not expanded.
+- **`cost_usd` stays 0.** The CLI prices tokens from litellm's table at promote time (`cost_source: "estimated"`); a model with no price entry (local / self-hosted) legitimately stays at 0.
+- **Open-source models need no wrapper of their own.** Ollama, vLLM, llama.cpp server, LM Studio, TGI, Together, Groq, Fireworks and OpenRouter serve OpenAI-compatible endpoints: `wrap_openai(OpenAI(base_url=...))` covers them unchanged; `model_id` is whatever string you passed, and a server that omits `usage` records zero tokens. Native non-OpenAI clients (the `ollama` package, in-process transformers) keep using [`record_model_call`](#record_model_call) / [`capture.model_call`](#capturemodel_call).
+- **Mixing with the manual API is fine** — a wrapped client inside `@capture.agent` alongside `@capture.tool` is the intended pairing. Do not also call `record_model_call` for the same request, or it is recorded twice.
+
+---
+
 ## Reading captures programmatically
 
 The read side parses a capture file and **upgrades it on read** to the current schema version, so old captures stay readable under newer SDKs.
@@ -999,6 +1064,20 @@ EvalShiftCallbackHandler(*, suite: str, redact: RedactSetting, tools: Any,
 ```
 
 LangChain `BaseCallbackHandler` that records a chain/agent run as one capture per root run. See [LangChain integration](#langchain-integration).
+
+### `wrap_openai` / `wrap_anthropic` / `wrap_genai`
+
+```python
+from evalshift.adapters.openai import wrap_openai        # [openai] extra
+from evalshift.adapters.anthropic import wrap_anthropic  # [anthropic] extra
+from evalshift.adapters.genai import wrap_genai          # [google-genai] extra
+
+wrap_openai(client: C) -> C
+wrap_anthropic(client: C) -> C
+wrap_genai(client: C) -> C
+```
+
+Return a drop-in proxy over a provider client instance that records one `model_call` per intercepted request made inside an active capture session, and is inert outside one. Typed as returning the client's own type for editor ergonomics; at runtime the value is an `evalshift.adapters._wrap.ClientProxy` (`unwrap()` gives the real client back). See [Provider client wrappers](#provider-client-wrappers).
 
 ---
 

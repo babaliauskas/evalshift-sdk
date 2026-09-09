@@ -4,7 +4,8 @@ Canonical hosted copy: https://www.evalshift.dev/sdk-llms-full.txt
 Package: evalshift-sdk (PyPI) | import: evalshift | version: 0.3.0 | schema: 2.1.0
 Python: >=3.10 | runtime deps: none (stdlib only) | typed (py.typed) | license: MIT
 Install: pip install evalshift-sdk   (or: uv add evalshift-sdk)
-Optional extra: pip install "evalshift-sdk[langchain]" -> langchain-core>=0.2
+Optional extras: pip install "evalshift-sdk[langchain]" -> langchain-core>=0.2;
+  "[openai]" -> openai>=1.40; "[anthropic]" -> anthropic>=0.40; "[google-genai]" -> google-genai>=1.0
 
 Purpose: in-process capture SDK for AI agents. Wraps agent invocations, tool calls, and model
 calls; records each run as a span tree; serializes to a JSON capture envelope written to
@@ -277,6 +278,37 @@ evalshift.adapters.langchain.EvalShiftCallbackHandler(*, suite: str, redact: Red
   @capture.tool on the same code path (double-record risk; the handler keeps its own
   run_id-based bookkeeping and does not bind the contextvar session).
 
+evalshift.adapters.openai.wrap_openai(client: C) -> C            # [openai] extra
+evalshift.adapters.anthropic.wrap_anthropic(client: C) -> C      # [anthropic] extra
+evalshift.adapters.genai.wrap_genai(client: C) -> C              # [google-genai] extra
+  Provider client wrappers (D-wrappers). Each returns a drop-in proxy over a client INSTANCE the
+  user already built (openai.OpenAI/AsyncOpenAI; anthropic.Anthropic/AsyncAnthropic;
+  google.genai.Client). Nothing is monkeypatched. Inside an active capture session
+  (@capture.agent / agent_session) every intercepted call records ONE model_call via
+  record_model_call: model_id, tools (the call's own tools kwarg or [] when absent -- NEVER the
+  session's; Gemini reads config.tools, callables declared via the SDK's converter), input
+  (ALWAYS a messages-style list: Anthropic system / Responses instructions / Gemini
+  system_instruction -> leading {"role": "system"}; Gemini Content/Part -> role-tagged messages,
+  function calls -> tool_calls, function responses -> "tool" messages), output (text),
+  requested_tool_calls (via extract_requested_tool_calls; stream deltas reassembled; [] when the
+  model asked for nothing), input/output tokens, latency_ms, generation_config (raw kwargs /
+  config dict, allow-listed). cost_usd stays 0 (CLI prices at promote). Outside a session: inert.
+  Intercepted: openai chat.completions.create + responses.create; anthropic messages.create +
+  messages.stream (manager records on __exit__ from get_final_message()); genai
+  models.generate_content + models.generate_content_stream + both under client.aio -- sync,
+  async and stream=True forms. Everything else (parse/beta, with_raw_response, embeddings,
+  chats, count_tokens, batches, files, live ...) is forwarded untouched and NOT recorded.
+  Streaming: the returned stream is a proxy forwarding every attribute; records once when
+  exhausted, closed or failed (partial output kept); usage from the final chunk (OpenAI chat
+  needs stream_options={"include_usage": True}, else 0); an abandoned stream records nothing.
+  Fail-open: the real call is never guarded (provider errors propagate; a failed request records
+  nothing); a wrapper fault = "not recorded". Proxy is NOT an isinstance of the client class;
+  evalshift.adapters._wrap.unwrap(proxy) returns the real client. Modules import-guard their SDK
+  (import without the extra does not fail). OpenAI-compatible servers (Ollama, vLLM, llama.cpp,
+  LM Studio, TGI, Together, Groq, Fireworks, OpenRouter) need no wrapper of their own:
+  wrap_openai(OpenAI(base_url=...)); a server omitting usage records 0 tokens. Do NOT also call
+  record_model_call for the same request (double record). Pairs with @capture.tool as intended.
+
 evalshift.capture.requested.extract_requested_tool_calls(response: Any) -> list[dict] | None
   NOT a top-level export (full import path above, like evalshift.capture.toolset). Derives the
   tool calls the model REQUESTED in its response -- distinct from tools= (what it was OFFERED)
@@ -461,6 +493,17 @@ for i, user_text in enumerate(turns):
 from evalshift.adapters.langchain import EvalShiftCallbackHandler
 handler = EvalShiftCallbackHandler(suite="rag_agent", redact=True, tools=bound_tools)
 chain.invoke({"question": q}, config={"callbacks": [handler]})
+
+# 4b. Provider client wrapper (pip install "evalshift-sdk[openai]"; same shape for
+#     evalshift.adapters.anthropic.wrap_anthropic / evalshift.adapters.genai.wrap_genai)
+from openai import OpenAI
+from evalshift.adapters.openai import wrap_openai
+client = wrap_openai(OpenAI())          # OpenAI(base_url=...) for Ollama / vLLM / Groq ...
+
+@capture.agent(suite="support", redact=True, tools=[])
+def answer(q: str) -> str:              # each create() inside records one model_call
+    r = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": q}])
+    return r.choices[0].message.content or ""
 
 # 5. Redaction — redact= is REQUIRED at every capture point; there is no global setter.
 from evalshift import capture, default_redactor
