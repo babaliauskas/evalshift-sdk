@@ -261,21 +261,29 @@ def instrument(original: Callable[..., Any], inst: Instrumentation) -> Callable[
     The real call is never guarded and its return value is handed back unchanged, except that a
     streaming response is returned wrapped in a :class:`StreamProxy` / :class:`AsyncStreamProxy`
     (which forwards every attribute of the original stream). Picks the async variant when
-    ``original`` is a coroutine function.
+    ``original`` is a coroutine function, or when a plain function hands back an awaitable
+    (anthropic's ``AsyncMessages.create`` is a ``def`` returning a coroutine): the awaitable is
+    then returned as a coroutine that records once it resolves, so ``await`` works unchanged.
     """
+
+    async def resolve(
+        awaitable: Any, spec: CallSpec | None, kw: dict[str, Any], start: float
+    ) -> Any:
+        response = await awaitable
+        if spec is None:
+            return response
+        if safety.guard("wrapper is_stream", lambda: inst.is_stream(kw, response)):
+            return AsyncStreamProxy(response, spec, inst, start)
+        _record_response(spec, response, inst, start)
+        return response
+
     if inspect.iscoroutinefunction(original):
 
         @functools.wraps(original)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
             spec = safety.guard("wrapper describe", lambda: inst.describe(kwargs))
             start = time.perf_counter()
-            response = await original(*args, **kwargs)
-            if spec is None:
-                return response
-            if safety.guard("wrapper is_stream", lambda: inst.is_stream(kwargs, response)):
-                return AsyncStreamProxy(response, spec, inst, start)
-            _record_response(spec, response, inst, start)
-            return response
+            return await resolve(original(*args, **kwargs), spec, kwargs, start)
 
         return async_wrapper
 
@@ -284,6 +292,8 @@ def instrument(original: Callable[..., Any], inst: Instrumentation) -> Callable[
         spec = safety.guard("wrapper describe", lambda: inst.describe(kwargs))
         start = time.perf_counter()
         response = original(*args, **kwargs)
+        if inspect.isawaitable(response):
+            return resolve(response, spec, kwargs, start)
         if spec is None:
             return response
         if safety.guard("wrapper is_stream", lambda: inst.is_stream(kwargs, response)):
