@@ -434,6 +434,36 @@ def test_nested_generation_config_dict_is_merged(
     }
 
 
+def test_bind_tools_constraints_are_recorded(capturing: Path, read_captures: CaptureReader) -> None:
+    """``bind_tools(tool_choice=..., parallel_tool_calls=False)`` lands in invocation_params."""
+    handler = EvalShiftCallbackHandler(suite="lc_gen_tools", redact=False, tools=[])
+    root, mc = uuid4(), uuid4()
+
+    handler.on_chain_start({"name": "c"}, {"q": "x"}, run_id=root, parent_run_id=None)
+    handler.on_chat_model_start(
+        {"name": "llm"},
+        [],
+        run_id=mc,
+        parent_run_id=root,
+        invocation_params={
+            "model": "gpt-x",
+            "tool_choice": {"type": "function", "function": {"name": "search"}},
+            "parallel_tool_calls": False,
+            "tools": [{"type": "function", "function": {"name": "search"}}],
+        },
+    )
+    handler.on_llm_end(_llm_result("o"), run_id=mc, parent_run_id=root)
+    handler.on_chain_end({"output": "ok"}, run_id=root, parent_run_id=None)
+
+    cap = read_captures("lc_gen_tools")[0]
+    AgentTrace.model_validate(cap["trace"])
+    model = _of_type(cap, "model_call")[0]
+    assert model["metadata"]["generation_config"] == {
+        "tool_choice": {"type": "function", "function": {"name": "search"}},
+        "parallel_tool_calls": False,
+    }
+
+
 # --- requested tool calls (D-requested) --------------------------------------------------------
 
 

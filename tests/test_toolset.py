@@ -8,6 +8,7 @@ CLI's independent hashing implementations cannot silently drift apart.
 
 from __future__ import annotations
 
+import json
 import threading
 from types import SimpleNamespace
 from typing import Any
@@ -569,3 +570,81 @@ def test_three_tool_vector_matches_pinned_fingerprint() -> None:
 
 def test_empty_toolset_vector_matches_pinned_fingerprint() -> None:
     assert fingerprint_tools([]) == EMPTY_TOOLSET_FINGERPRINT
+
+
+# --- strict (Phase 4, review #8): the one function-envelope key carried besides the three -----
+
+
+def _strict_openai(strict: Any) -> dict[str, Any]:
+    tool = json.loads(json.dumps(OPENAI_TOOL))
+    tool["function"]["strict"] = strict
+    return tool
+
+
+def _strict_anthropic(strict: Any) -> dict[str, Any]:
+    tool = json.loads(json.dumps(ANTHROPIC_TOOL))
+    tool["strict"] = strict
+    return tool
+
+
+def test_openai_strict_true_is_carried_onto_the_canonical_tool() -> None:
+    assert normalize_tools(_strict_openai(True)) == [
+        {
+            "name": "add_task",
+            "description": "Add a task to the user's to-do list.",
+            "input_schema": OPENAI_TOOL["function"]["parameters"],
+            "strict": True,
+        }
+    ]
+
+
+def test_anthropic_strict_true_is_carried_onto_the_canonical_tool() -> None:
+    assert normalize_tools(_strict_anthropic(True)) == [
+        {
+            "name": "get_schedule",
+            "description": "Look up a user's schedule for a given date.",
+            "input_schema": ANTHROPIC_TOOL["input_schema"],
+            "strict": True,
+        }
+    ]
+
+
+def test_strict_false_or_absent_omits_the_key_entirely() -> None:
+    """Absent and falsy must be byte-identical to the pre-strict shape: no `"strict": false`."""
+    baseline = normalize_tools(OPENAI_TOOL)
+    assert baseline == [
+        {
+            "name": "add_task",
+            "description": "Add a task to the user's to-do list.",
+            "input_schema": OPENAI_TOOL["function"]["parameters"],
+        }
+    ]
+    assert normalize_tools(_strict_openai(False)) == baseline
+    assert normalize_tools(_strict_openai(None)) == baseline
+    assert normalize_tools(_strict_anthropic(False)) == normalize_tools(ANTHROPIC_TOOL)
+
+
+def test_strict_changes_the_fingerprint() -> None:
+    plain = normalize_tools(OPENAI_TOOL)
+    strict = normalize_tools(_strict_openai(True))
+    assert plain is not None and strict is not None
+    assert fingerprint_tools(plain) != fingerprint_tools(strict)
+
+
+def test_strict_false_keeps_the_pinned_fingerprints_byte_for_byte() -> None:
+    """Every capture written before this key existed must fingerprint identically."""
+    raw: list[Any] = [_strict_anthropic(False), _strict_openai(False), _gemini_tool()]
+    normalized = normalize_tools(raw)
+    assert normalized == THREE_TOOL_NORMALIZED
+    assert normalized is not None
+    assert fingerprint_tools(normalized) == THREE_TOOL_FINGERPRINT
+    assert fingerprint_tools([]) == EMPTY_TOOLSET_FINGERPRINT
+
+
+def test_gemini_declarations_get_no_strict_key() -> None:
+    """FunctionDeclaration has no strict flag; a stray attribute must not invent one."""
+    tool = _gemini_tool()
+    tool.function_declarations[0].strict = True
+    normalized = normalize_tools(tool)
+    assert normalized is not None
+    assert "strict" not in normalized[0]
