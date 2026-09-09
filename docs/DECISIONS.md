@@ -405,6 +405,15 @@ different, non-interchangeable facts about tools:
   one and silently corrupts an eval, whereas `None` here is an honest, distinguishable "not
   recorded" that the CLI's fallback already handles. Requiring it would also break every existing
   call site for a value most callers can only produce by parsing a provider response.
+- **The LangChain adapter fills it in for free.** `on_llm_end` reads the response's
+  `AIMessage.tool_calls`, which LangChain has already normalised across providers into
+  `{name, args, id, type}`, so the adapter only renames (`args` → `arguments`, `id` → `call_id`)
+  and hands the result to the same `_normalize_requested_tool_calls` the manual entry points use —
+  never to `extract_requested_tool_calls`, which exists for *raw* provider responses. The
+  `[]`/`None` split falls out of the generation shape: a chat generation carries an `AIMessage`,
+  so no tool calls there is the real value `[]`, while a plain text `Generation` has no `.message`
+  and asserts nothing (`None`). `invalid_tool_calls` are excluded — a call whose arguments failed
+  to parse is a malformed generation, not a request the app could have dispatched.
 - **Normalised to exactly `{name, arguments, call_id}` at the capture point**, because the CLI's
   `RequestedToolCall` is `extra="forbid"` — a raw Anthropic `{"type": "tool_use", "id": ...}` or
   OpenAI `{"index": 0, "function": {...}}` item would fail validation. `name` is the only
@@ -431,7 +440,9 @@ different, non-interchangeable facts about tools:
   `tests/test_migrate.py` (the built-in identity edge), `tests/conformance/test_parity.py`
   (the vendored strict `RequestedToolCall`), `tests/test_capture_requested_tool_calls.py` (both
   entry points sync and async, normalisation, the fail-open degrades, and the redaction pass),
-  `tests/test_redaction.py` (the `_REDACTABLE_FIELDS` entry itself), and
+  `tests/test_redaction.py` (the `_REDACTABLE_FIELDS` entry itself),
+  `tests/adapters/test_langchain.py` (the adapter's `AIMessage.tool_calls` mapping, the
+  `[]`-vs-`None` split, and its redaction pass), and
   `tests/conformance/test_capture_conformance.py` (an end-to-end written capture carrying
   provider-shaped items still validating against the vendored CLI model).
 

@@ -726,6 +726,7 @@ Behavior:
 - A raising redactor drops the capture (fail-closed), chain unaffected.
 - Framework payloads are coerced to JSON-able primitives before recording, so a non-serializable LangChain object can't silently break the capture write.
 - Retriever calls are recorded as `retrieval` events and the chain's final output as a `final_output` event — event kinds the manual API does not emit.
+- `requested_tool_calls` is captured automatically, with no extra wiring: `on_llm_end` reads the response's `AIMessage.tool_calls` — LangChain has already normalised it across providers — and maps `args` → `arguments`, `id` → `call_id` through the same normaliser [`record_model_call`](#record_model_call) uses. A chat model that asked for nothing records `[]`; a plain text (non-chat) completion, which has no message and so cannot ask, records nothing (`null`). `invalid_tool_calls` are deliberately excluded: those are calls whose arguments failed to parse, not requests your app could have dispatched. Streaming needs no special case — the aggregated message reaches `on_llm_end` with its tool calls intact. See [Offered vs. requested vs. executed](#recording-model-calls).
 - **Do not mix** the handler with `@capture.tool`-decorated code on the same call path. The handler deliberately keeps its own run-id-based span bookkeeping (LangChain callbacks fire flat with `run_id`/`parent_run_id`, not nested on the stack) and does not bind the contextvar session — mixing risks double-recording. Use one or the other.
 
 ---

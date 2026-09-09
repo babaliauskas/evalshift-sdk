@@ -33,6 +33,22 @@ def _llm_result(text: str, *, input_tokens: int = 0, output_tokens: int = 0) -> 
     return SimpleNamespace(generations=[[generation]], llm_output=None)
 
 
+def _chat_llm_result(text: str, tool_calls: Any, **extra: Any) -> SimpleNamespace:
+    """A duck-typed chat ``LLMResult`` whose ``AIMessage`` carries ``tool_calls``.
+
+    LangChain normalises every provider into ``{"name", "args", "id", "type"}`` items, so the
+    handler only has to rename them -- these fixtures use that exact shape.
+    """
+    message = SimpleNamespace(usage_metadata=None, tool_calls=tool_calls, **extra)
+    generation = SimpleNamespace(text=text, message=message)
+    return SimpleNamespace(generations=[[generation]], llm_output=None)
+
+
+def _text_llm_result(text: str) -> SimpleNamespace:
+    """A plain (non-chat) ``LLMResult``: a ``Generation`` carries no ``.message`` at all."""
+    return SimpleNamespace(generations=[[SimpleNamespace(text=text)]], llm_output=None)
+
+
 def _events(cap: dict[str, Any]) -> list[dict[str, Any]]:
     return list(cap["trace"]["events"])
 
@@ -416,3 +432,132 @@ def test_nested_generation_config_dict_is_merged(
         "top_p": 0.9,
         "response_mime_type": "application/json",
     }
+
+
+# --- requested tool calls (D-requested) --------------------------------------------------------
+
+
+def _model_call_for(suite: str, response: Any, read_captures: CaptureReader) -> dict[str, Any]:
+    """Drive one chat model call to completion with ``response`` and return its ``model_call``."""
+    handler = EvalShiftCallbackHandler(suite=suite, redact=False, tools=[])
+    root, mc = uuid4(), uuid4()
+    handler.on_chain_start({"name": "c"}, {"q": "x"}, run_id=root, parent_run_id=None)
+    handler.on_chat_model_start({"name": "llm"}, [], run_id=mc, parent_run_id=root)
+    handler.on_llm_end(response, run_id=mc, parent_run_id=root)
+    handler.on_chain_end({"output": "ok"}, run_id=root, parent_run_id=None)
+
+    cap = read_captures(suite)[0]
+    AgentTrace.model_validate(cap["trace"])  # the CLI's strict RequestedToolCall must accept it
+    return _of_type(cap, "model_call")[0]
+
+
+def test_requested_tool_calls_from_ai_message(
+    capturing: Path, read_captures: CaptureReader
+) -> None:
+    """``AIMessage.tool_calls`` is already normalised: only args -> arguments, id -> call_id."""
+    response = _chat_llm_result(
+        "",
+        [{"name": "search", "args": {"q": "hi"}, "id": "call_1", "type": "tool_call"}],
+    )
+    model = _model_call_for("lc_req_one", response, read_captures)
+    assert model["requested_tool_calls"] == [
+        {"name": "search", "arguments": {"q": "hi"}, "call_id": "call_1"}
+    ]
+
+
+def test_requested_tool_calls_keep_response_order(
+    capturing: Path, read_captures: CaptureReader
+) -> None:
+    response = _chat_llm_result(
+        "",
+        [
+            {"name": "search", "args": {"q": "hi"}, "id": "call_1", "type": "tool_call"},
+            {"name": "refund", "args": {"order": 7}, "id": "call_2", "type": "tool_call"},
+        ],
+    )
+    model = _model_call_for("lc_req_two", response, read_captures)
+    assert [c["name"] for c in model["requested_tool_calls"]] == ["search", "refund"]
+    assert [c["call_id"] for c in model["requested_tool_calls"]] == ["call_1", "call_2"]
+
+
+def test_chat_message_with_empty_tool_calls_records_empty_list(
+    capturing: Path, read_captures: CaptureReader
+) -> None:
+    """A chat model that asked for nothing is a real value ``[]``, not "not recorded"."""
+    model = _model_call_for("lc_req_empty", _chat_llm_result("hi", []), read_captures)
+    assert model["requested_tool_calls"] == []
+
+
+def test_message_without_tool_calls_attribute_records_empty_list(
+    capturing: Path, read_captures: CaptureReader
+) -> None:
+    model = _model_call_for("lc_req_noattr", _llm_result("hi"), read_captures)
+    assert model["requested_tool_calls"] == []
+
+
+def test_plain_generation_without_message_records_nothing(
+    capturing: Path, read_captures: CaptureReader
+) -> None:
+    """A non-chat ``Generation`` says nothing about tool calls -> ``None``, never ``[]``."""
+    model = _model_call_for("lc_req_text", _text_llm_result("hi"), read_captures)
+    assert model["requested_tool_calls"] is None
+
+
+def test_requested_tool_call_without_name_is_dropped(
+    capturing: Path, read_captures: CaptureReader
+) -> None:
+    response = _chat_llm_result(
+        "",
+        [
+            {"name": "", "args": {}, "id": "call_1", "type": "tool_call"},
+            {"name": "search", "args": {"q": "hi"}, "id": "call_2", "type": "tool_call"},
+        ],
+    )
+    model = _model_call_for("lc_req_noname", response, read_captures)
+    assert model["requested_tool_calls"] == [
+        {"name": "search", "arguments": {"q": "hi"}, "call_id": "call_2"}
+    ]
+
+
+def test_requested_tool_call_non_dict_args_degrade_to_empty_object(
+    capturing: Path, read_captures: CaptureReader
+) -> None:
+    response = _chat_llm_result(
+        "", [{"name": "search", "args": "q=hi", "id": None, "type": "tool_call"}]
+    )
+    model = _model_call_for("lc_req_badargs", response, read_captures)
+    assert model["requested_tool_calls"] == [{"name": "search", "arguments": {}, "call_id": None}]
+
+
+def test_invalid_tool_calls_are_not_recorded(capturing: Path, read_captures: CaptureReader) -> None:
+    """``invalid_tool_calls`` are parse failures, not requests the app could have executed."""
+    response = _chat_llm_result(
+        "",
+        [],
+        invalid_tool_calls=[
+            {"name": "search", "args": "{not json", "id": "call_1", "error": "boom"}
+        ],
+    )
+    model = _model_call_for("lc_req_invalid", response, read_captures)
+    assert model["requested_tool_calls"] == []
+
+
+def test_requested_tool_calls_are_redacted(capturing: Path, read_captures: CaptureReader) -> None:
+    """Requested arguments are model-generated payload, so the redactor walks them (D-requested)."""
+    handler = EvalShiftCallbackHandler(suite="lc_req_redact", redact=True, tools=[])
+    root, mc = uuid4(), uuid4()
+    handler.on_chain_start({"name": "c"}, {"q": "x"}, run_id=root, parent_run_id=None)
+    handler.on_chat_model_start({"name": "llm"}, [], run_id=mc, parent_run_id=root)
+    handler.on_llm_end(
+        _chat_llm_result(
+            "", [{"name": "mail", "args": {"to": "bob@corp.com"}, "id": "c1", "type": "tool_call"}]
+        ),
+        run_id=mc,
+        parent_run_id=root,
+    )
+    handler.on_chain_end({"output": "ok"}, run_id=root, parent_run_id=None)
+
+    cap = read_captures("lc_req_redact")[0]
+    model = _of_type(cap, "model_call")[0]
+    assert model["requested_tool_calls"][0]["name"] == "mail"
+    assert "bob@corp.com" not in str(model["requested_tool_calls"])

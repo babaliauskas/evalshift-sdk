@@ -255,8 +255,14 @@ evalshift.adapters.langchain.EvalShiftCallbackHandler(*, suite: str, redact: Red
   span this handler ever opens (on_llm_start / on_chat_model_start), for the handler's whole
   lifetime -- the handler itself plays the "session" role. Records model calls (with token usage
   extracted from LLMResult), tool calls, retriever calls (retrieval events), and the chain's
-  final output (final_output event). Payloads coerced to JSON-able primitives. Import is guarded:
-  importing the module without langchain-core installed does not fail. DO NOT mix with
+  final output (final_output event). requested_tool_calls is captured with NO extra wiring:
+  on_llm_end reads generations[0][0].message.tool_calls (LangChain's already provider-normalised
+  AIMessage.tool_calls), maps args->arguments and id->call_id, and runs it through the same
+  normaliser record_model_call uses. Chat message present but no tool calls -> [] ("asked for
+  nothing"); plain non-chat Generation (no .message) -> field unset (None). invalid_tool_calls
+  are NOT included (parse failures, not requests). Streaming needs no special case: the
+  aggregated message arrives on on_llm_end. Payloads coerced to JSON-able primitives. Import is
+  guarded: importing the module without langchain-core installed does not fail. DO NOT mix with
   @capture.tool on the same code path (double-record risk; the handler keeps its own
   run_id-based bookkeeping and does not bind the contextvar session).
 

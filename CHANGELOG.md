@@ -30,6 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   model requested nothing; `None` means the value was not a recognised
   response (or one of its calls was unreadable) — the two are not
   interchangeable. Never raises, and imports no provider SDK.
+- The LangChain adapter records `requested_tool_calls` with no extra wiring:
+  `on_llm_end` reads `AIMessage.tool_calls` (already provider-normalised by
+  LangChain) and maps it through the same normaliser `record_model_call` uses.
+  A chat model that asked for nothing records `[]`; a plain text completion,
+  which cannot ask, records nothing. `invalid_tool_calls` are excluded — they
+  are parse failures, not requests.
 
 ### Changed
 
