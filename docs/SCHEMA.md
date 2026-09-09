@@ -134,6 +134,12 @@ still accepts a capture written before per-call toolset capture existed; the CLI
 presence at promotion time, not at parse time, where it can name the capture in the error instead
 of failing a generic parse.
 
+The sidecar those `toolset_ref`s point at holds `{"tools": [{name, description, input_schema}, …]}`,
+each tool optionally carrying `strict: true` (see `docs/DECISIONS.md` D-toolset). The sidecar is
+content-addressed rather than versioned, so adding that optional key needs no `SCHEMA_VERSION` bump:
+a strict toolset simply hashes to a different sidecar than the same toolset without it, and a
+toolset that declares no strict flag hashes exactly as it always did.
+
 **This is a MAJOR bump with no migration.** Every prior bump registered at least an identity
 migration (see the footnote below) so older captures kept upgrading on read. 2.0.0 breaks that
 pattern deliberately: there is no honest way to derive `tools_offered` for a capture written

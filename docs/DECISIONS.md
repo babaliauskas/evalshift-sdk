@@ -332,6 +332,21 @@ policy in `docs/SCHEMA.md`.
 - **No allow-list**, unlike `generation_config`. An `input_schema` is arbitrary user JSON needed in
   full to dispatch the tool; normalisation only recognises or rejects tool *shapes* (Anthropic /
   OpenAI / Gemini), never prunes keys within a schema.
+- **`strict` is the one function-envelope key carried besides the three.** The canonical shape is
+  `{name, description, input_schema}` plus an optional `strict: true` — from OpenAI's
+  `function.strict` or Anthropic's top-level `strict`. Every other envelope key (provider-specific
+  decoration) is still dropped; `strict` is not decoration. It changes what the *provider*
+  enforces: with it, the API guarantees the arguments validate against `input_schema`. A replay
+  that re-sends the schema without the flag runs the target under a weaker constraint than the
+  source ever did, and every argument-drift number measured that way silently compares two
+  different regimes. (The "never prunes keys" rule above is about keys *within* `input_schema`,
+  and is unchanged.) Present **only when truthy**, never as `"strict": false`: absent and
+  explicitly-false say the same thing, and collapsing them keeps the canonical dict — and so every
+  fingerprint written before this key existed, including the pinned SDK/CLI vectors — byte-for-byte
+  identical. The recorded value is the canonical `True`, so `strict: 1` and `strict: true`
+  fingerprint alike. Gemini's `FunctionDeclaration` has no equivalent and never gains one.
+  The sidecar is content-addressed, not versioned, so this needs no `SCHEMA_VERSION` bump: a
+  strict toolset simply hashes to a different sidecar than the same toolset without it.
 - **Not redacted, like `generation_config` — but for a different mechanical reason**, stated
   precisely so nobody "fixes" it later. `generation_config` is exempt because it lives in
   `span.metadata`, which `redact_tree` (`redaction/base.py`) never walks. `tools_offered` /

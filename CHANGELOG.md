@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `generation_config` records three more keys: `tool_choice`,
+  `parallel_tool_calls`, and `tool_config` (Gemini's spelling of `tool_choice`),
+  so `evalshift capture sync` can replay a case under the same tool-use
+  constraint the source ran under instead of silently dropping it.
+  `parallel_tool_calls: false` survives intact — the allow-list filters on
+  `is not None`, never truthiness. The LangChain adapter picks all three up
+  from `invocation_params`, so `bind_tools(tool_choice=...,
+  parallel_tool_calls=False)` is recorded with no extra work.
+- `evalshift.capture.generation.jsonable` now dumps an object exposing a
+  `model_dump` method (a `google.genai.types.ToolConfig`, say — duck-typed via
+  `getattr`, never imported) to a dict rather than its `str()` form, so a
+  Gemini `tool_config` lands as readable JSON. Anything without a usable
+  `model_dump` still degrades to `str()` exactly as before.
+- Normalised tools carry an optional `strict: true` — from OpenAI's
+  `function.strict` or Anthropic's top-level `strict` — alongside
+  `{name, description, input_schema}`. The key is present only when the source
+  tool declared it truthy and omitted entirely otherwise, so every toolset
+  fingerprint written before this change is byte-for-byte unchanged and no
+  `SCHEMA_VERSION` bump is needed. Without it a replay would re-send the schema
+  under a weaker constraint than the source ran under. See `docs/DECISIONS.md`
+  D-toolset.
 - Trace schema `2.1.0`: `model_call` events carry an optional
   `requested_tool_calls` list of `{name, arguments, call_id}` items — what
   the *model asked to call* in its response, as distinct from `tools_offered`

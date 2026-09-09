@@ -141,7 +141,12 @@ record_model_call(*, model_id: str, tools: Any, input: Any = None, output: Any =
   never raised) -- structurally invalid for that event on purpose, so the CLI refuses it at
   promotion rather than trusting an unstamped toolset. NOT allow-listed (unlike
   generation_config): input_schema is arbitrary user JSON needed whole to dispatch; normalisation
-  only recognises/rejects tool SHAPES, never prunes keys within one. NOT redacted, config not
+  only recognises/rejects tool SHAPES, never prunes keys within one. Canonical shape is
+  {name, description, input_schema} plus ONE optional key: "strict": true, carried from OpenAI's
+  function.strict / Anthropic's top-level strict when truthy, omitted entirely when false or
+  absent (so every fingerprint written before this key existed is byte-identical). It is kept
+  because a replay that drops it runs the target under a weaker schema constraint than the source.
+  Gemini FunctionDeclarations have no strict flag and never gain one. NOT redacted, config not
   payload like generation_config, but by a different mechanism worth knowing: generation_config
   lives in span.metadata (redact_tree never walks metadata); tools_offered/toolset_ref are
   top-level span.data fields, safe only because model_call's redactable-field tuple names its
@@ -168,15 +173,21 @@ record_model_call(*, model_id: str, tools: Any, input: Any = None, output: Any =
   generation_config: ALLOW-LISTED, then recorded under the event's metadata["generation_config"]
   so the CLI can replay promoted cases with the same settings. Recorded keys, and ONLY these:
   temperature, top_p, response_mime_type, response_schema, response_format, max_output_tokens,
-  max_tokens. Every other key is dropped — debug log only, never a warning or raise. Reason:
+  max_tokens, tool_choice, parallel_tool_calls, tool_config (Gemini's spelling of tool_choice).
+  Every other key is dropped — debug log only, never a warning or raise. Reason:
   metadata is config, not payload, and the redactor walks payload fields only, so an unlisted key
   (system_instruction above all, safety_settings) would enter the capture unmasked.
-  Values are JSON-coerced: primitives/dict/list pass through; anything else (e.g. a Pydantic
-  response_schema class) is stored as str(value), so a non-JSON-able setting no longer kills the
+  The three tool-use keys exist so a replay can re-impose the constraint the source ran under
+  instead of silently dropping it; parallel_tool_calls: False survives (the filter is `is not
+  None`, never truthiness).
+  Values are JSON-coerced: primitives/dict/list pass through; an object exposing model_dump (a
+  google.genai.types.ToolConfig, say -- duck-typed via getattr, never imported, same pattern as
+  toolset._coerce_schema) is dumped to a dict; anything else (e.g. a Pydantic response_schema
+  class) is stored as str(value), so a non-JSON-able setting no longer kills the
   whole capture at write time. Non-dict generation_config dropped fail-open; a config the
   allow-list empties writes no generation_config key at all. The LangChain adapter applies the
   same allow-list to invocation_params (flat keys + a Gemini-style nested generation_config dict;
-  flat wins).
+  flat wins), so bind_tools(tool_choice=..., parallel_tool_calls=False) is recorded automatically.
 
 configure(*, sink: Sink | None = UNSET, sample_rate: float | None = UNSET, dedup: bool = UNSET,
           max_captures: int | None = UNSET, capture_ttl: float | None = UNSET,
