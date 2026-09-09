@@ -260,6 +260,29 @@ evalshift.adapters.langchain.EvalShiftCallbackHandler(*, suite: str, redact: Red
   @capture.tool on the same code path (double-record risk; the handler keeps its own
   run_id-based bookkeeping and does not bind the contextvar session).
 
+evalshift.capture.requested.extract_requested_tool_calls(response: Any) -> list[dict] | None
+  NOT a top-level export (full import path above, like evalshift.capture.toolset). Derives the
+  tool calls the model REQUESTED in its response -- distinct from tools= (what it was OFFERED)
+  and @capture.tool (what the app EXECUTED) -- for record_model_call(requested_tool_calls=...).
+  Accepts an already-serialised response dict, an object with model_dump()/to_dict(), or the
+  provider response object itself (attribute-walked; no provider SDK is ever imported, D-deps).
+  Shapes: OpenAI Chat Completions choices[0].message.tool_calls[*] {id, type: "function",
+  function: {name, arguments (JSON STRING)}} + the deprecated message.function_call single-call
+  form; OpenAI Responses output[*] items with type == "function_call" {name, arguments (JSON
+  string), call_id}; Anthropic content[*] blocks with type == "tool_use" {id, name, input};
+  Gemini candidates[0].content.parts[*].functionCall (REST/camelCase) or .function_call
+  (to_dict()/snake_case) {name, args, id?}. First choice/candidate only (n>1 alternatives are
+  not concatenated).
+  Returns items of EXACTLY {"name": str, "arguments": dict, "call_id": str | None}, response
+  order; call_id is None where the provider has none (Gemini REST, legacy function_call).
+  [] vs None are NOT interchangeable: [] = recognised response, model requested nothing (a real
+  value); None = not a recognised response, OR one of its tool calls had no usable name -- the
+  WHOLE response is then refused rather than reported one call short (same refusal rule as
+  normalize_tools). Never substitute [] for None.
+  Never raises. Degradations (debug log only, arguments -> {} for that one call): unparseable
+  JSON arguments, JSON parsing to a non-object, non-object input/args. arguments is JSON-coerced
+  via capture.generation.jsonable -> a deep copy, always sink-serialisable.
+
 ## Behavior rules (invariants)
 
 - Gate off (EVALSHIFT_CAPTURE not truthy) -> every wrapper is a pure pass-through; nothing
