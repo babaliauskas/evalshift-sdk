@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (what it was allowed to call) and the `tool_call` events (what the app
   actually ran). `null` means "not recorded", `[]` means "the model requested
   no tools"; see `docs/DECISIONS.md` D-requested.
+- `record_model_call(..., requested_tool_calls=[...])` and
+  `rec.set_requested_tool_calls([...])` on the `capture.model_call` recorder
+  record that list. Both are optional and fail-open: a malformed value is
+  dropped with a debug log rather than raised, and each item is normalised to
+  exactly `{name, arguments, call_id}` so the capture stays CLI-valid. Unlike
+  `tools=`, these arguments are redacted — they are model-generated payload,
+  so `requested_tool_calls` joins `input` / `output` in `model_call`'s
+  redactable fields.
 
 ### Changed
 

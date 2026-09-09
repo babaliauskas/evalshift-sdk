@@ -396,10 +396,44 @@ different, non-interchangeable facts about tools:
   field before the SDK writes it. The CLI added it first; the SDK emits it from schema 2.1.0 on.
   The field sits immediately after `tools_offered` in `trace/models.py`,
   `schema.EVENT_FIELDS["model_call"]`, and the vendored CLI mirror, mirroring the CLI class body.
+- **Recorded at both model-call entry points, and optional at both.** `record_model_call(...,
+  requested_tool_calls=[...])` for an atomic call; `rec.set_requested_tool_calls([...])` on the
+  `capture.model_call` recorder for a streamed one (before or during the block, last write wins —
+  a streamed tool call is complete only once its argument deltas have arrived). A caller who
+  records nothing gets `None`, not a `TypeError`: the D-toolset / D-4c "required keyword"
+  reasoning does not transfer, because an absent toolset is indistinguishable from a real empty
+  one and silently corrupts an eval, whereas `None` here is an honest, distinguishable "not
+  recorded" that the CLI's fallback already handles. Requiring it would also break every existing
+  call site for a value most callers can only produce by parsing a provider response.
+- **Normalised to exactly `{name, arguments, call_id}` at the capture point**, because the CLI's
+  `RequestedToolCall` is `extra="forbid"` — a raw Anthropic `{"type": "tool_use", "id": ...}` or
+  OpenAI `{"index": 0, "function": {...}}` item would fail validation. `name` is the only
+  load-bearing key: an item without a usable one is dropped, while a non-dict `arguments`
+  degrades to `{}` (knowing the model asked for `issue_refund` is worth keeping even when the
+  arguments were unreadable) and a non-string `call_id` is stringified.
+- **Fail-open, like every other value on the capture path.** A non-list, or a list from which no
+  item survives normalisation, is dropped (logged at `debug`) and the enclosing `model_call` event
+  is still recorded. A non-empty list that normalises to nothing becomes `None`, never `[]` — "we
+  could not read what the model asked for" is not "it asked for nothing". Building the list from
+  a raw provider response is `evalshift.capture.requested.extract_requested_tool_calls`, a stdlib
+  helper the caller opts into rather than something the recording path does implicitly.
+- **Redacted, unlike the toolset fields.** `requested_tool_calls` is *payload*, not config: the
+  arguments are values the model generated from the user's input and routinely carry the same PII
+  a `tool_call`'s `arguments` do. So it is listed in `_REDACTABLE_FIELDS["model_call"]`
+  (`redaction/base.py`) and passes through the same redactor as tool arguments (D-4c) — the
+  deliberate opposite of `tools_offered` / `toolset_ref`, which name schemas, not values
+  (D-toolset). `default_redactor` walks dicts and lists recursively, so the one entry covers every
+  nested argument value. This is also the counter-example that keeps D-toolset's warning honest:
+  `model_call` now has both redacted and unredacted top-level `span.data` fields, so that tuple
+  must keep naming fields one by one.
 - **Verified by:** `tests/test_serialize.py` and `tests/test_migrate_reconstruct.py` (the
   pass-through and round-trip, plus a 2.0.0 envelope loading with the field `None`),
-  `tests/test_migrate.py` (the built-in identity edge), and `tests/conformance/test_parity.py`
-  (the vendored strict `RequestedToolCall`).
+  `tests/test_migrate.py` (the built-in identity edge), `tests/conformance/test_parity.py`
+  (the vendored strict `RequestedToolCall`), `tests/test_capture_requested_tool_calls.py` (both
+  entry points sync and async, normalisation, the fail-open degrades, and the redaction pass),
+  `tests/test_redaction.py` (the `_REDACTABLE_FIELDS` entry itself), and
+  `tests/conformance/test_capture_conformance.py` (an end-to-end written capture carrying
+  provider-shaped items still validating against the vendored CLI model).
 
 ## Open follow-ups (not blocking v1)
 - ~~**D1-followup:** unify packaging so CLI + SDK co-install cleanly~~ — resolved 2026-09-09 in

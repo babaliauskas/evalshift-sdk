@@ -80,6 +80,31 @@ def test_redact_tree_masks_model_fields() -> None:
     assert "[REDACTED_EMAIL]" in span.data["output"]
 
 
+def test_redact_tree_masks_requested_tool_call_arguments() -> None:
+    # requested_tool_calls is payload, not config (D-requested): the arguments are values the
+    # model generated from user input, so they go through the same redactor as a tool call's --
+    # the deliberate opposite of tools_offered / toolset_ref, which name schemas, not values.
+    tree = SpanTree()
+    span = tree.open_span(
+        "model_call",
+        span_id="mc_1",
+        start_ts=0.0,
+        data={
+            "model_id": "m",
+            "tools_offered": ["email_customer"],
+            "requested_tool_calls": [
+                {"name": "email_customer", "arguments": {"to": "a@b.com"}, "call_id": "t1"}
+            ],
+        },
+    )
+    tree.close_span(span, end_ts=1.0)
+    redact_tree(tree, default_redactor)
+    [call] = span.data["requested_tool_calls"]
+    assert "[REDACTED_EMAIL]" in call["arguments"]["to"]
+    assert call["name"] == "email_customer"
+    assert span.data["tools_offered"] == ["email_customer"]  # config, never walked
+
+
 def test_redact_tree_leaves_non_payload_fields() -> None:
     tree = SpanTree()
     span = tree.open_span(

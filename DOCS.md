@@ -314,6 +314,45 @@ toolsets between calls (one process, one suite, two toolsets, chosen by an `if`)
 a bare list mixing any of those. A value matching none of them is left unstamped (both fields stay
 `None`) rather than guessed at — logged at `debug`, never raised. Details: [docs/DECISIONS.md](docs/DECISIONS.md) D-toolset.
 
+**Offered vs. requested vs. executed.** A `model_call` event records three different facts about
+tools, and they are not interchangeable:
+
+| what | how you record it | field |
+| --- | --- | --- |
+| **offered** — what the model *could* call | `tools=` on this call (above) | `tools_offered` / `toolset_ref` |
+| **requested** — what the model *asked* to call, in its response | `requested_tool_calls=` (below) | `requested_tool_calls` |
+| **executed** — what your app *actually ran* | `@capture.tool` on the function | the `tool_call` / `tool_result` events |
+
+They diverge routinely — a guard rejects a requested call, a router drops it, your app pre-fetches
+a tool the model never asked for, or the process dies before dispatch — and each divergence is
+exactly the thing an eval wants to see, which is why all three are recorded rather than one
+inferred from the others:
+
+```python
+from evalshift import record_model_call
+from evalshift.capture.requested import extract_requested_tool_calls
+
+response = client.messages.create(model="claude-sonnet-5", messages=messages, tools=tools)
+
+record_model_call(
+    model_id="claude-sonnet-5",
+    tools=tools,                                              # offered
+    input=messages,
+    output=response.content[0].text,
+    requested_tool_calls=extract_requested_tool_calls(response.model_dump()),   # requested
+)
+```
+
+`extract_requested_tool_calls` is a stdlib helper that pulls the list out of a raw Anthropic /
+OpenAI / Gemini response; you can also build it by hand as
+`[{"name": ..., "arguments": {...}, "call_id": ...}]`. Each item is normalised to exactly those
+three keys (`arguments` defaults to `{}`, `call_id` to `None`, extra provider keys are dropped).
+Omitting the argument records nothing — `null`, meaning "not recorded", which is *not* the same as
+`[]`, meaning "the model asked for no tools". A malformed value is dropped fail-open (logged at
+`debug`), never raised. Unlike `tools=`, these arguments **are** redacted: they are payload the
+model generated from user input, so they go through the same redactor as a tool call's arguments.
+Details: [docs/DECISIONS.md](docs/DECISIONS.md) D-requested.
+
 **Streaming calls** — use the recorder context manager and accumulate as chunks arrive:
 
 ```python
@@ -336,6 +375,8 @@ async with capture.model_call(model_id="claude-sonnet-5", tools=tools, input=mes
 Recorder behavior:
 
 - Exactly one `model_call` event is recorded on exit, carrying the joined `add_text` output.
+- `rec.set_requested_tool_calls([...])` records what the model asked to call (same contract as
+  `record_model_call`'s argument above); call it before or during the block, last write wins.
 - `latency_ms` is derived automatically from the `with`-block duration unless you pass it to `set_usage`.
 - Without an active session the recorder is inert — no span, no write.
 - Recorder faults never break your streaming loop (fail-open).
@@ -600,7 +641,7 @@ def scrub(value):
 def handle_case(record: dict) -> str: ...
 ```
 
-Fields passed to the redactor, per span kind: `tool` → `arguments`, `result`, `error`; `model_call` → `input`, `output`; `retrieval` → `query`, `documents`; `guardrail` → `reason`; `final_output` → `text`; `error` → `message`. `model_call`'s `toolset_ref` / `tools_offered` are deliberately **not** in that list — they are config, not payload, exactly like `generation_config` (which lives outside `span.data` entirely); see [docs/DECISIONS.md](docs/DECISIONS.md) D-toolset for why the two fields are safe from redaction by construction rather than by an explicit skip.
+Fields passed to the redactor, per span kind: `tool` → `arguments`, `result`, `error`; `model_call` → `input`, `output`, `requested_tool_calls`; `retrieval` → `query`, `documents`; `guardrail` → `reason`; `final_output` → `text`; `error` → `message`. `requested_tool_calls` is in that list because a requested call's arguments are payload the model generated from user input, as sensitive as a tool call's own (D-requested). `model_call`'s `toolset_ref` / `tools_offered` are deliberately **not** in that list — they are config, not payload, exactly like `generation_config` (which lives outside `span.data` entirely); see [docs/DECISIONS.md](docs/DECISIONS.md) D-toolset for why the two fields are safe from redaction by construction rather than by an explicit skip.
 
 **What a written capture may still contain.** Redaction masks payload values only. It does not scrub structural metadata (tool names, `model_id`, token counts, timestamps, call ids, the `metadata["evalshift"]` block), the envelope (`capture_id`, `suite`, `code_version`, `input_hash` — a one-way SHA-256; the raw input is never stored at the envelope level), or anything your redactor's patterns miss. `default_redactor` is deliberately conservative and is **not** a comprehensive PII scrubber — supply a domain-specific redactor when your data has structured secrets.
 
@@ -738,9 +779,10 @@ rec.add_text(text: str) -> None
 rec.set_usage(*, input_tokens: int = 0, output_tokens: int = 0,
               cost_usd: float = 0.0, latency_ms: int | None = None) -> None
 rec.set_generation_config(config: dict[str, Any]) -> None
+rec.set_requested_tool_calls(calls: Any) -> None
 ```
 
-Streaming model-call recorder. Records exactly one `model_call` event on exit with the joined `add_text` chunks as output. `latency_ms` auto-derives from the block duration unless set via `set_usage`. Inert without an active session — no toolset resolution or sidecar write happens for a no-op either; recorder faults never break the stream loop. `tools` is required, with the same contract as [`record_model_call`](#record_model_call)'s. `generation_config` is allow-listed and JSON-coerced exactly as in `record_model_call`; use `set_generation_config` (last write wins, filtered on the same seven keys) when the effective settings only become known mid-stream.
+Streaming model-call recorder. Records exactly one `model_call` event on exit with the joined `add_text` chunks as output. `latency_ms` auto-derives from the block duration unless set via `set_usage`. Inert without an active session — no toolset resolution or sidecar write happens for a no-op either; recorder faults never break the stream loop. `tools` is required, with the same contract as [`record_model_call`](#record_model_call)'s. `set_requested_tool_calls` records what the model asked to call, also with the same contract as `record_model_call`'s argument — usable before or during the block (a streamed tool call is only complete once its argument deltas have arrived), last write wins. `generation_config` is allow-listed and JSON-coerced exactly as in `record_model_call`; use `set_generation_config` (last write wins, filtered on the same seven keys) when the effective settings only become known mid-stream.
 
 ### `capture.tool`
 
@@ -763,6 +805,7 @@ record_model_call(
     tools: Any,
     input: Any = None,
     output: Any = None,
+    requested_tool_calls: Any = None,
     input_tokens: int = 0,
     output_tokens: int = 0,
     cost_usd: float = 0.0,
@@ -780,6 +823,8 @@ Records an already-complete model call into the active session. No-op outside on
 - `tools=None` to defer to the enclosing session's own `tools=` (`capture.agent` / `agent_session` / `agent_session_async`) instead of asserting one for this call. A call's own non-`None` value always wins over the session's, even across repeated calls in one session that each choose differently — the reason this is per-call at all is that a real agent can switch toolsets mid-run.
 
 A value matching no recognised shape — the call's own, or (when `tools=None`) the session's — normalises to `None`: neither field is stamped (logged at `debug`), leaving the capture structurally invalid for that event rather than guessing. Unlike `generation_config`, toolsets are **not** allow-listed — an `input_schema` is arbitrary user JSON needed in full to dispatch, so normalisation only recognises or rejects tool *shapes*, never prunes keys within a schema. Like `generation_config`, toolsets are config, not payload, and are never redacted — but by a different mechanism: `generation_config` lives outside `span.data` entirely, while the toolset fields are top-level `span.data` fields kept safe only because `model_call`'s redactable-field list names exactly `input` and `output`. See [docs/DECISIONS.md](docs/DECISIONS.md) D-toolset for the full reasoning.
+
+`requested_tool_calls` (schema 2.1.0, D-requested) records what the **model asked for** in this response — a third fact alongside `tools` (what it was *offered*) and the `tool_call` events (what your app *executed*); see [Offered vs. requested vs. executed](#recording-model-calls) above. Pass a list of `{"name": str, "arguments": dict, "call_id": str | None}` items, typically from `evalshift.capture.requested.extract_requested_tool_calls(response_dict)`. Each item is normalised to exactly those three keys (extra provider keys dropped, `arguments` → `{}`, `call_id` → `None`) because the CLI's `RequestedToolCall` model is `extra="forbid"`. Unlike `tools`, it is **optional**: omitted or `None` records nothing (`null` = "not recorded", distinct from `[]` = "the model requested no tools"). A malformed value — not a list, or a list with no item carrying a usable `name` — is dropped fail-open and logged at `debug`; the event is still recorded. Unlike `tools`, these arguments **are** redacted.
 
 `generation_config` records the call's generation settings under the event's `metadata["generation_config"]`, so `evalshift capture sync` can replay promoted cases with the same settings (structured-output schemas no longer need hand-mirroring into the CLI config). Exactly seven keys are recorded — `temperature`, `top_p`, `response_mime_type`, `response_schema`, `response_format`, `max_output_tokens`, `max_tokens` — and every other key is dropped, silently apart from a debug log. The allow-list is not tidiness: metadata is config, not payload, so the redactor never walks it, and an unlisted key — `system_instruction` above all, or `safety_settings` — would land in the capture unmasked. Values are coerced to JSON on the way in: primitives, dicts and lists pass through, anything else (a Pydantic `response_schema` class, say) is stored as its `str()` form, so a non-serialisable setting can no longer take the whole capture down at write time. A non-dict `generation_config` is dropped fail-open, as is one the allow-list empties — neither writes the key at all. The LangChain adapter applies the same allow-list to `invocation_params`.
 

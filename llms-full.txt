@@ -99,11 +99,14 @@ capture.model_call(*, model_id: str, tools: Any, input: Any = None,
     rec.set_usage(*, input_tokens: int = 0, output_tokens: int = 0, cost_usd: float = 0.0,
                   latency_ms: int | None = None) -> None
     rec.set_generation_config(config: dict[str, Any]) -> None   # last write wins; mid-stream OK
+    rec.set_requested_tool_calls(calls: Any) -> None   # last write wins; before or during block
   Records exactly one model_call event on exit, output = "".join(chunks). latency_ms auto-derived
   from block duration (round((end-start)*1000)) unless set via set_usage. Inert without an active
   session (no toolset resolution/sidecar write either, for a no-op). Recorder faults never break
   the host stream loop. tools= is REQUIRED, same contract as record_model_call below.
-  generation_config as in record_model_call below.
+  generation_config as in record_model_call below. set_requested_tool_calls records what the model
+  ASKED to call -- same contract as record_model_call's requested_tool_calls= below; call it before
+  or during the block (a streamed tool call is complete only once its argument deltas arrive).
 
 capture.tool  /  capture.tool(name: str | None = None)
   Decorator (bare or with name; name defaults to fn.__name__). Auto-detects async def. Records a
@@ -111,9 +114,12 @@ capture.tool  /  capture.tool(name: str | None = None)
   parent_call_id) + tool_result (at close; result, error). No-op when no agent session active.
   A raising tool records error=str(exc), result=None, and the exception propagates.
   NOT related to record_model_call's tools= -- @capture.tool decorates a function your agent
-  actually CALLS; tools= records what the model was OFFERED on a given call, called or not.
+  actually CALLS (EXECUTED); tools= records what the model was OFFERED on a given call, called or
+  not; requested_tool_calls= records what the model ASKED to call. See the three-way table under
+  record_model_call below -- the three diverge routinely and none is derivable from another.
 
 record_model_call(*, model_id: str, tools: Any, input: Any = None, output: Any = None,
+                  requested_tool_calls: Any = None,
                   input_tokens: int = 0, output_tokens: int = 0, cost_usd: float = 0.0,
                   latency_ms: int | None = None,
                   generation_config: dict[str, Any] | None = None) -> None
@@ -138,9 +144,27 @@ record_model_call(*, model_id: str, tools: Any, input: Any = None, output: Any =
   only recognises/rejects tool SHAPES, never prunes keys within one. NOT redacted, config not
   payload like generation_config, but by a different mechanism worth knowing: generation_config
   lives in span.metadata (redact_tree never walks metadata); tools_offered/toolset_ref are
-  top-level span.data fields, safe only because model_call's redactable-field tuple names exactly
-  ("input", "output") and neither toolset field is in it. Full reasoning: docs/DECISIONS.md
-  D-toolset.
+  top-level span.data fields, safe only because model_call's redactable-field tuple names its
+  fields one by one and neither toolset field is among them (requested_tool_calls, below, is the
+  counter-example: same kind of field, but it IS in that tuple). Full reasoning:
+  docs/DECISIONS.md D-toolset.
+  requested_tool_calls: OPTIONAL (default None) -- what the MODEL ASKED FOR in this response.
+  Three different facts live on one model_call event and are never interchangeable:
+    OFFERED   what the model COULD call      tools=            -> tools_offered / toolset_ref
+    REQUESTED what the model ASKED to call   requested_tool_calls= -> requested_tool_calls
+    EXECUTED  what the app ACTUALLY RAN      @capture.tool     -> tool_call / tool_result events
+  They diverge routinely (a guard rejects a requested call; the app runs one the model never asked
+  for; the process dies before dispatch) and each divergence is the signal an eval wants, so all
+  three are recorded, never one inferred from another. Pass a list of
+  {"name": str, "arguments": dict, "call_id": str | None} items -- build it with
+  evalshift.capture.requested.extract_requested_tool_calls(response_dict), a stdlib helper that
+  reads a raw Anthropic/OpenAI/Gemini response. Each item is normalised to EXACTLY those three
+  keys (extra provider keys dropped, arguments -> {}, call_id -> None) because the CLI's
+  RequestedToolCall model is extra="forbid". None/omitted = "not recorded" (field null); [] = a
+  real assertion "the model requested no tools" -- the CLI's fallback to executed calls turns on
+  that distinction, so they are never conflated. Malformed (not a list, or no item with a usable
+  name) -> dropped fail-open, debug log, event still recorded. UNLIKE tools=, these arguments ARE
+  redacted: model-generated payload, not config. Full reasoning: docs/DECISIONS.md D-requested.
   generation_config: ALLOW-LISTED, then recorded under the event's metadata["generation_config"]
   so the CLI can replay promoted cases with the same settings. Recorded keys, and ONLY these:
   temperature, top_p, response_mime_type, response_schema, response_format, max_output_tokens,
@@ -280,7 +304,8 @@ evalshift.adapters.langchain.EvalShiftCallbackHandler(*, suite: str, redact: Red
   agent_session_async / handler ctor); there is no process-wide setter and no default. Runs in
   memory before serialization; masked values flow into trace events AND the derived tool
   input_hash. Raising redactor -> capture dropped (fail-closed).
-- Redactable fields per span kind: tool: arguments,result,error | model_call: input,output |
+- Redactable fields per span kind: tool: arguments,result,error |
+  model_call: input,output,requested_tool_calls |
   retrieval: query,documents | guardrail: reason | final_output: text | error: message.
   NOT scrubbed: names, model_id, token counts, costs, timestamps, call ids,
   metadata["evalshift"], envelope fields (capture_id, suite, code_version, input_hash).
@@ -344,6 +369,7 @@ dropped; newer major -> refuse (UnsupportedSchemaVersionError).
 
 # 1. Decorated agent + tool + atomic model call
 from evalshift import capture, record_model_call
+from evalshift.capture.requested import extract_requested_tool_calls
 
 @capture.tool(name="search_orders")
 def search_orders(customer_id: str) -> dict:
@@ -356,9 +382,12 @@ ROUTER_TOOLS = [{"name": "search_orders", "description": "Look up a customer's o
 
 @capture.agent(suite="support", redact=True, tools=[])   # this agent never switches toolsets
 def handle_ticket(query: str) -> str:
-    record_model_call(model_id="claude-sonnet-5", tools=ROUTER_TOOLS,
-                      input={"query": query}, output="On it.")
-    search_orders(customer_id="c42")
+    record_model_call(model_id="claude-sonnet-5", tools=ROUTER_TOOLS,     # OFFERED
+                      input={"query": query}, output="On it.",
+                      # REQUESTED: what the model asked for, from the raw provider response.
+                      # extract_requested_tool_calls returns None when it recognises nothing.
+                      requested_tool_calls=extract_requested_tool_calls(response_dict))
+    search_orders(customer_id="c42")                                      # EXECUTED
     return "done"
 # Run: EVALSHIFT_CAPTURE=1 python agent.py -> .evalshift/captures/support/cap_<hex>.json
 # Sidecar written once: .evalshift/toolsets/<fingerprint-hex>.json ("tools": ROUTER_TOOLS)

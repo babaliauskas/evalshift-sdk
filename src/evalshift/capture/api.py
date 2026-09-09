@@ -57,10 +57,13 @@ def _new_call_id() -> str:
 # exempt because it lives in ``span.metadata``, and ``redact_tree`` (``redaction/base.py``) only
 # ever walks ``span.data``. ``tools_offered`` / ``toolset_ref`` are exempt for a different reason:
 # they *are* top-level ``span.data`` fields (stamped alongside ``model_id`` / ``input`` /
-# ``output`` by the functions below), and are safe only because ``_REDACTABLE_FIELDS`` maps
-# ``model_call`` to exactly ``("input", "output")`` -- neither toolset field is in that tuple. If a
+# ``output`` by the functions below), and are safe only because ``_REDACTABLE_FIELDS`` names
+# ``model_call``'s redactable fields one by one and neither toolset field is among them. If a
 # future change ever widens that tuple wholesale (e.g. to ``"*"`` or a computed set) rather than
 # naming fields individually, it would silently start redacting these two as a side effect.
+# ``requested_tool_calls`` (D-requested) is the counter-example that proves the rule: another
+# top-level ``span.data`` field stamped by the same functions, but one that *is* in that tuple,
+# because a requested call's arguments are model-generated payload, not a tool schema.
 
 
 def _normalize_toolset(tools: Any) -> tuple[list[dict[str, Any]], str] | None:
@@ -155,6 +158,66 @@ def _stamp_toolset(data: dict[str, Any], resolved: tuple[list[dict[str, Any]], s
         data["toolset_ref"] = ref
 
 
+# --- requested tool calls (D-requested) --------------------------------------------------------
+
+
+def _normalize_requested_tool_call(item: Any) -> dict[str, Any] | None:
+    """Coerce one raw item to exactly ``{name, arguments, call_id}``, or ``None`` if unusable.
+
+    ``name`` is the only load-bearing key: a non-mapping item, or one whose ``name`` is not a
+    non-empty string, has nothing worth recording and is dropped. ``arguments`` defaults to ``{}``
+    and a non-dict value (an unparsed JSON string, say) degrades to ``{}`` rather than dropping the
+    call -- knowing the model asked for ``search_orders`` is worth keeping even when the arguments
+    were unreadable. ``call_id`` defaults to ``None`` and is stringified if the provider used a
+    non-string id, so the result always satisfies the CLI's strict ``RequestedToolCall``.
+    """
+    if not isinstance(item, dict):
+        return None
+    name = item.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    arguments = item.get("arguments")
+    call_id = item.get("call_id")
+    return {
+        "name": name,
+        "arguments": dict(arguments) if isinstance(arguments, dict) else {},
+        "call_id": call_id if isinstance(call_id, str) or call_id is None else str(call_id),
+    }
+
+
+def _normalize_requested_tool_calls(value: Any) -> list[dict[str, Any]] | None:
+    """Normalise a raw ``requested_tool_calls=`` value, or ``None`` to record nothing.
+
+    ``None`` in gives ``None`` out ("not recorded"), and an empty list stays an empty list ("the
+    model requested no tools") -- the CLI's fallback to executed tool calls turns on exactly that
+    distinction, so the two are never conflated. Anything that is not a list/tuple of items, and a
+    non-empty list from which no item survives :func:`_normalize_requested_tool_call`, both degrade
+    to ``None`` (logged at ``debug``): "we could not read what the model asked for" is honest,
+    ``[]`` would not be. Partial garbage keeps the readable items and logs the rest. Nothing here
+    raises -- the enclosing ``model_call`` event is still recorded either way (fail-open).
+    """
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)):
+        safety.logger.debug(
+            "evalshift: requested_tool_calls=%s is not a list of {name, arguments, call_id} "
+            "items -- recording nothing for this model call",
+            type(value).__name__,
+        )
+        return None
+    candidates = (_normalize_requested_tool_call(item) for item in value)
+    normalized = [call for call in candidates if call is not None]
+    if len(normalized) != len(value):
+        safety.logger.debug(
+            "evalshift: dropped %d of %d requested_tool_calls item(s) with no usable 'name'",
+            len(value) - len(normalized),
+            len(value),
+        )
+    if value and not normalized:
+        return None  # nothing readable -> "not recorded", never an asserted empty list
+    return normalized
+
+
 def _bind(fn: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
     """Best-effort ``{param: value}`` view of a call; never raises (for hashing + tool args)."""
     try:
@@ -227,6 +290,7 @@ def record_model_call(
     tools: Any,
     input: Any = None,
     output: Any = None,
+    requested_tool_calls: Any = None,
     input_tokens: int = 0,
     output_tokens: int = 0,
     cost_usd: float = 0.0,
@@ -256,6 +320,24 @@ def record_model_call(
     are **not** allow-listed, because an ``input_schema`` is arbitrary user JSON needed in full to
     dispatch; normalisation only recognises or rejects tool *shapes*, never prunes keys within one.
 
+    ``requested_tool_calls`` (D-requested, schema 2.1.0) is what the **model asked for** in this
+    response -- a third, independent fact alongside ``tools`` (what it was *offered*, i.e. allowed
+    to ask for) and the ``tool_call`` events ``@capture.tool`` records (what the app *executed*).
+    The three diverge routinely -- an app can refuse a requested call, run one the model never
+    asked for, or fail before dispatch -- so all three are recorded rather than one inferred from
+    another. Pass a list of ``{"name": str, "arguments": dict, "call_id": str | None}`` items;
+    :func:`evalshift.capture.requested.extract_requested_tool_calls` builds one from a raw
+    Anthropic/OpenAI/Gemini response dict, so a caller rarely writes it by hand. Each item is
+    normalised to exactly those three keys (extra provider keys dropped, ``arguments`` defaulting
+    to ``{}``, ``call_id`` to ``None``) because the CLI's ``RequestedToolCall`` is
+    ``extra="forbid"``. Unlike ``tools``, this is **optional**: omitting it (or passing ``None``)
+    records nothing -- an honest "not recorded", distinguishable from ``[]``, which asserts the
+    model requested no tools. A malformed value (not a list, or a list with no usable item) is
+    dropped fail-open and logged at ``debug``; the event is still recorded. Unlike ``tools``,
+    these arguments **are** redacted -- they are model-generated payload, not config, so
+    ``_REDACTABLE_FIELDS`` lists the field and the same redactor that masks a tool call's
+    arguments masks these (D-4c).
+
     ``generation_config`` is recorded under the event's ``metadata["generation_config"]`` so the
     CLI can replay the call with the same settings. It is config, not payload — the redactor never
     touches it, so only the ``GENERATION_KEYS`` allow-list is kept (``temperature``,
@@ -278,6 +360,9 @@ def record_model_call(
         if latency_ms is not None:
             data["latency_ms"] = latency_ms
         _stamp_toolset(data, _resolve_call_toolset(tools))
+        requested = _normalize_requested_tool_calls(requested_tool_calls)
+        if requested is not None:
+            data["requested_tool_calls"] = requested
         metadata: dict[str, Any] = {}
         sanitized = sanitize_generation_config(generation_config)
         if sanitized is not None:
@@ -484,8 +569,9 @@ class _ModelCallRecorder:
 
     Dual-protocol — usable as ``with capture.model_call(...)`` or ``async with`` — so it wraps
     either a sync generator or an ``async for`` token stream. Accumulate output with
-    :meth:`add_text` and (optionally) usage with :meth:`set_usage`; on exit it records exactly one
-    ``model_call`` span carrying the joined output. No active session => inert (no span, no write).
+    :meth:`add_text`, usage with :meth:`set_usage`, and the tool calls the model asked for with
+    :meth:`set_requested_tool_calls` (all optional); on exit it records exactly one ``model_call``
+    span carrying the joined output. No active session => inert (no span, no write).
     Every bookkeeping step is fail-open, so a recorder fault never breaks the host stream loop.
     """
 
@@ -494,6 +580,7 @@ class _ModelCallRecorder:
         "_input",
         "_model_id",
         "_parts",
+        "_requested_tool_calls",
         "_span",
         "_tools",
         "_tree",
@@ -513,6 +600,7 @@ class _ModelCallRecorder:
         self._tools = tools
         self._parts: list[str] = []
         self._usage: dict[str, Any] = {}
+        self._requested_tool_calls: list[dict[str, Any]] | None = None
         self._tree: SpanTree | None = None
         self._span: Any = None
         self._generation_config: dict[str, Any] | None = safety.guard(
@@ -544,6 +632,25 @@ class _ModelCallRecorder:
                 usage["latency_ms"] = latency_ms
             self._usage = usage
 
+    def set_requested_tool_calls(self, calls: Any) -> None:
+        """Record the tool calls the model asked for in this response (last write wins).
+
+        Usable before or during the ``with`` block -- a streamed tool call is typically only
+        complete once its argument deltas have all arrived. ``calls`` is a list of
+        ``{"name": str, "arguments": dict, "call_id": str | None}`` items (see
+        :func:`evalshift.capture.requested.extract_requested_tool_calls` for building one from a
+        raw provider response), normalised to exactly those three keys. Requested is not executed:
+        see :func:`record_model_call` for the full contract, including why a malformed value is
+        dropped fail-open rather than raised and why these arguments *are* redacted.
+        """
+        with safety.fail_open("model_call set_requested_tool_calls"):
+            normalized = _normalize_requested_tool_calls(calls)
+            if normalized is None:
+                return
+            self._requested_tool_calls = normalized
+            if self._span is not None:
+                self._span.data["requested_tool_calls"] = normalized
+
     def set_generation_config(self, config: dict[str, Any]) -> None:
         """Record the call's generation config (last write wins).
 
@@ -569,6 +676,11 @@ class _ModelCallRecorder:
                 metadata["generation_config"] = self._generation_config
             data: dict[str, Any] = {"model_id": self._model_id, "input": self._input}
             _stamp_toolset(data, _resolve_call_toolset(self._tools))
+            # A value set before the ``with`` (the recorder is constructed first) is carried onto
+            # the span here; one set inside the block is stamped straight onto ``span.data`` by
+            # :meth:`set_requested_tool_calls`. Either way it is in place before redaction runs.
+            if self._requested_tool_calls is not None:
+                data["requested_tool_calls"] = self._requested_tool_calls
             self._span = self._tree.open_span(
                 "model_call",
                 span_id=f"mc_{uuid.uuid4().hex}",
@@ -847,9 +959,11 @@ class _Capture:
     ) -> _ModelCallRecorder:
         """Open a streaming model-call recorder (sync ``with`` or ``async with``).
 
-        Accumulate output via :meth:`_ModelCallRecorder.add_text` and usage via
-        :meth:`_ModelCallRecorder.set_usage`; exactly one ``model_call`` span is recorded on exit.
-        Use :func:`record_model_call` instead for an already-complete (atomic) call.
+        Accumulate output via :meth:`_ModelCallRecorder.add_text`, usage via
+        :meth:`_ModelCallRecorder.set_usage`, and the tool calls the model asked for via
+        :meth:`_ModelCallRecorder.set_requested_tool_calls`; exactly one ``model_call`` span is
+        recorded on exit. Use :func:`record_model_call` instead for an already-complete (atomic)
+        call.
 
         ``tools`` is **required**, with the same contract as :func:`record_model_call`'s: the
         toolset offered on this call, ``[]`` to assert none, or ``None`` to inherit the enclosing
