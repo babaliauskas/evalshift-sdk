@@ -263,7 +263,10 @@ def instrument(original: Callable[..., Any], inst: Instrumentation) -> Callable[
     (which forwards every attribute of the original stream). Picks the async variant when
     ``original`` is a coroutine function.
     """
-    if inspect.iscoroutinefunction(original):
+    # ``inspect.unwrap`` sees through ``functools.wraps`` decorators: the Stainless-generated
+    # SDKs (openai, anthropic) wrap their async ``create`` in a *sync* ``@required_args``
+    # wrapper, which ``iscoroutinefunction`` alone reports as sync.
+    if inspect.iscoroutinefunction(inspect.unwrap(original)):
 
         @functools.wraps(original)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
