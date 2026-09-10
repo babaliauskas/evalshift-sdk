@@ -1,6 +1,6 @@
 # FROZEN MIRROR — do not edit by hand except to re-sync with the CLI.
-# Source: evalshift-cli/src/evalshift/traces/models.py (AgentTrace + TraceEvent union) and
-#         evalshift-cli/src/evalshift/captures/models.py (CaptureEnvelope).
+# Source: evalshift-cli/src/evalshift_cli/traces/models.py (AgentTrace + TraceEvent union) and
+#         evalshift-cli/src/evalshift_cli/captures/models.py (CaptureEnvelope).
 # License: the CLI source is AGPL-3.0-or-later; this mirror is distributed here under this
 #          repository's MIT license by Lukas Babaliauskas, the copyright holder of both
 #          codebases. Re-syncs must only pull from CLI code with the same sole authorship.
@@ -44,6 +44,14 @@ class _BaseEvent(_StrictModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class RequestedToolCall(_StrictModel):
+    """One tool call the model asked for in its response (not necessarily executed)."""
+
+    name: str = Field(min_length=1)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    call_id: str | None = None
+
+
 class ModelCallEvent(_BaseEvent):
     """A model invocation inside an agent timeline."""
 
@@ -56,13 +64,17 @@ class ModelCallEvent(_BaseEvent):
     cost_usd: float = Field(default=0.0, ge=0.0)
     latency_ms: int = Field(default=0, ge=0)
     # Content-addressed pointer to the toolset sidecar (``sha256:<hex>``, see
-    # ``evalshift.captures.toolset.fingerprint_tools``) plus the cheap,
+    # ``evalshift_cli.captures.toolset.fingerprint_tools``) plus the cheap,
     # display-only tool-name list. Optional *here* so the parser accepts a
     # capture that predates per-call toolset capture -- the requirement that
     # they be present is enforced at promotion, not at parse time, where a
     # useful error can name the capture instead of a generic parse failure.
     toolset_ref: str | None = None
     tools_offered: list[str] | None = None
+    # What the model asked for in this response, as opposed to ``tools_offered`` (what it was
+    # allowed to ask for) and the ``tool_call`` events (what the app actually executed).
+    # ``None`` on a capture written before schema 2.1.0; ``[]`` means the model requested none.
+    requested_tool_calls: list[RequestedToolCall] | None = None
 
 
 class ToolCallEvent(_BaseEvent):
@@ -203,6 +215,7 @@ __all__ = [
     "FinalOutputEvent",
     "GuardrailEvent",
     "ModelCallEvent",
+    "RequestedToolCall",
     "RetrievalEvent",
     "ToolCallEvent",
     "ToolResultEvent",

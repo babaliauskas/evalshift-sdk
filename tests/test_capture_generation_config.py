@@ -267,3 +267,56 @@ def test_recorder_constructor_is_fail_open_on_self_referential_config(
     [envelope] = read_captures("s")
     [mc] = _model_events(envelope)
     assert "generation_config" not in mc["metadata"]
+
+
+# --- Phase 4 (review #8): tool-use constraints ride along with the other generation params ---
+
+
+def test_tool_use_constraints_land_on_the_event(
+    capturing: Any, read_captures: CaptureReader
+) -> None:
+    cfg = {
+        "tool_choice": {"type": "tool", "name": "search"},
+        "parallel_tool_calls": False,
+        "temperature": 0.0,
+    }
+
+    @capture.agent(suite="s", redact=False, tools=[])
+    def agent() -> str:
+        record_model_call(model_id="m", output="ok", generation_config=cfg, tools=[])
+        return "ok"
+
+    agent()
+    [envelope] = read_captures("s")
+    [mc] = _model_events(envelope)
+    assert mc["metadata"]["generation_config"] == cfg
+
+
+class _ToolConfig:
+    """Duck-typed stand-in for ``google.genai.types.ToolConfig`` (never imported — D-deps)."""
+
+    def model_dump(self, **kwargs: Any) -> dict[str, Any]:
+        return {"function_calling_config": {"mode": "ANY", "allowed_function_names": ["search"]}}
+
+
+def test_gemini_tool_config_object_lands_as_a_dict(
+    capturing: Any, read_captures: CaptureReader
+) -> None:
+    @capture.agent(suite="s", redact=False, tools=[])
+    def agent() -> str:
+        record_model_call(
+            model_id="m",
+            output="ok",
+            generation_config={"tool_config": _ToolConfig()},
+            tools=[],
+        )
+        return "ok"
+
+    agent()
+    [envelope] = read_captures("s")
+    [mc] = _model_events(envelope)
+    assert mc["metadata"]["generation_config"] == {
+        "tool_config": {
+            "function_calling_config": {"mode": "ANY", "allowed_function_names": ["search"]}
+        }
+    }

@@ -41,6 +41,13 @@ class ModelCallEvent:
     # CLI at promotion, not by this SDK at write/parse time.
     toolset_ref: str | None = None
     tools_offered: list[str] | None = None
+    # What the *model asked for* in this response, as opposed to ``tools_offered`` (what it was
+    # allowed to ask for) and the ``tool_call`` events (what the app actually ran). Each item is
+    # exactly ``{"name": str, "arguments": dict, "call_id": str | None}`` -- the CLI models it as a
+    # strict ``RequestedToolCall`` submodel; here it stays a plain dict list so the runtime keeps
+    # no nested dataclass (D-deps). ``None`` means "not recorded" (a capture written before schema
+    # 2.1.0, or a caller that passed nothing); ``[]`` means "the model requested no tools".
+    requested_tool_calls: list[dict[str, Any]] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     type: str = "model_call"
 

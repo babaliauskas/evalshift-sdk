@@ -134,6 +134,12 @@ still accepts a capture written before per-call toolset capture existed; the CLI
 presence at promotion time, not at parse time, where it can name the capture in the error instead
 of failing a generic parse.
 
+The sidecar those `toolset_ref`s point at holds `{"tools": [{name, description, input_schema}, …]}`,
+each tool optionally carrying `strict: true` (see `docs/DECISIONS.md` D-toolset). The sidecar is
+content-addressed rather than versioned, so adding that optional key needs no `SCHEMA_VERSION` bump:
+a strict toolset simply hashes to a different sidecar than the same toolset without it, and a
+toolset that declares no strict flag hashes exactly as it always did.
+
 **This is a MAJOR bump with no migration.** Every prior bump registered at least an identity
 migration (see the footnote below) so older captures kept upgrading on read. 2.0.0 breaks that
 pattern deliberately: there is no honest way to derive `tools_offered` for a capture written
@@ -153,6 +159,46 @@ honest 2.0.0 capture, which is the only fix this SDK offers. See the versioning 
 forward-compatibility table below for exactly when this refusal (as opposed to a normal migration)
 fires, and `docs/DECISIONS.md` D-8 for the design rationale.
 
+## 2.1.0: model-requested tool calls
+
+Schema `2.1.0` added one optional field to `model_call` events so a reader can tell what the model
+**asked for** apart from what the application actually **ran**:
+
+| Field                  | Type                              | Default | Meaning |
+|------------------------|-----------------------------------|---------|---------|
+| `requested_tool_calls` | `list[RequestedToolCall] \| None` | `None`  | The tool calls present in the model's own response. `None` = not recorded (a capture written before 2.1.0, or a caller that passed nothing); `[]` = the model requested no tools. |
+
+Each item is exactly `{"name": str, "arguments": dict, "call_id": str | None}` — a strict
+`RequestedToolCall` model on the CLI side (`extra="forbid"`, `arguments` defaulting to `{}` and
+`call_id` to `None`), a plain `dict` in the SDK's stdlib dataclass, which needs no nested type
+(D-deps). The SDK normalises every item to those three keys and drops anything else before
+stamping it, so the emitted JSON always validates against the CLI model.
+
+Three distinct facts now live on one `model_call` event, and they are not interchangeable:
+
+| Field                  | Question it answers            | Source |
+|------------------------|--------------------------------|--------|
+| `tools_offered` / `toolset_ref` | what *could* be called | the `tools=` you passed at the call |
+| `requested_tool_calls` | what the model *asked* to call | the provider response |
+| the `tool_call` events | what the app *actually ran*    | `@capture.tool` |
+
+They diverge routinely — an app can ignore a requested call, run something the model never asked
+for, or fail before dispatch — which is exactly why both are recorded rather than one inferred
+from the other. See `docs/DECISIONS.md` D-requested.
+
+**This is a MINOR bump with an identity migration.** The field is additive with an honest default
+(absent → `None`, "not recorded"), so `_register_builtins()` registers `2.0.0 -> 2.1.0` as a no-op
+step (`_migrate_2_0_0_to_2_1_0`). The edge is not decorative: `_build_chain` walks by exact
+`from_version`, so without it every 2.0.0 capture would become unreadable. It deliberately does
+**not** fabricate `[]` — that would assert the model requested no tools on every pre-2.1.0 call,
+the same dishonesty 2.0.0 refused for `tools_offered`.
+
+**Field ordering matters here.** The CLI's trace models are `extra="forbid"`, so the CLI must
+learn the field before the SDK writes it; it did, and the SDK emits it from 2.1.0 on.
+`requested_tool_calls` sits immediately after `tools_offered` in both the SDK dataclass
+(`trace/models.py`) and `schema.EVENT_FIELDS["model_call"]`, mirroring the CLI class body so the
+conformance parity drift guard keeps the two field sets aligned.
+
 ## Semantic-versioning policy
 
 The version is `MAJOR.MINOR.PATCH`.
@@ -167,10 +213,11 @@ The version is `MAJOR.MINOR.PATCH`.
     `_register_builtins()` (`src/evalshift/trace/migrate.py`) *if* older captures should keep
     upgrading on read. `_build_chain` walks the registry by exact `from_version`; a source version
     with no registered outgoing edge has no path to the target. A MINOR bump can almost always
-    register a trivial identity migration (`out.setdefault(...)` for the new fields — 1.1.0's
-    since-removed `_migrate_1_0_0_to_1_1_0` was one example) rather than a reshaping one, because
-    additive fields have an honest default. Skipping the edge anyway makes every older capture
-    unreadable by this SDK, so treat it as required for MINOR.
+    register a trivial identity migration rather than a reshaping one, because additive fields
+    have an honest default — `_migrate_2_0_0_to_2_1_0` (schema 2.1.0's `requested_tool_calls`) is
+    the shipped example, and 1.1.0's since-removed `_migrate_1_0_0_to_1_1_0` was the earlier one.
+    Skipping the edge anyway makes every older capture unreadable by this SDK, so treat it as
+    required for MINOR.
 
 [^major-refusal]: A MAJOR bump's migration is only "mechanically transformable" when there's a
     value an old capture's absence of a field can honestly become. `2.0.0` is the first bump where
@@ -211,7 +258,9 @@ The chain inside `upgrade_envelope_dict`:
    deliberately — it is not simply appended to: it should list every `schema_version` this SDK can
    actually produce via `upgrade_envelope_dict` (the new version, plus any older one a registered
    migration still bridges to it). A version dropped from the tuple should also lose its bridge
-   (step 3) — see 2.0.0, which dropped `1.0.0` and `1.1.0` together with their migration.
+   (step 3) — see 2.0.0, which dropped `1.0.0` and `1.1.0` together with their migration. It is
+   currently `("2.0.0", "2.1.0")`: `2.0.0` stays listed because the identity edge added in 2.1.0
+   still bridges it.
 2. If the **trace** contract changed, re-sync the vendored CLI model
    (`tests/conformance/cli_models_vendored.py`) and the `schema.py` field constants — the drift
    guard in `tests/conformance/test_parity.py` enforces parity.
@@ -228,7 +277,7 @@ The chain inside `upgrade_envelope_dict`:
 
 | Source version vs. supported      | Behavior                                               |
 |------------------------------------|--------------------------------------------------------|
-| older, **same major**              | migrate up the registered chain (`NoMigrationPathError` if a step is missing — a registry bug) |
+| older, **same major**              | migrate up the registered chain — e.g. `2.0.0` → `2.1.0` via the built-in identity step (`NoMigrationPathError` if a step is missing — a registry bug) |
 | older, **different (lower) major** | refuse — raise `ObsoleteSchemaVersionError`, *unless* a registered chain happens to bridge the gap (tried first; see the 2.0.0 section above) |
 | same                               | read as-is                                             |
 | newer **minor/patch**, same major  | **warn** (`logging.getLogger("evalshift")`) and read best-effort; unknown fields dropped |

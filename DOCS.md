@@ -21,9 +21,10 @@ The EvalShift SDK is an **in-process capture SDK** for AI agents. You install it
 7. [Redaction](#redaction)
 8. [Async and concurrency](#async-and-concurrency)
 9. [LangChain integration](#langchain-integration)
-10. [Reading captures programmatically](#reading-captures-programmatically)
-11. [API reference](#api-reference)
-12. [Troubleshooting / FAQ](#troubleshooting--faq)
+10. [Provider client wrappers](#provider-client-wrappers)
+11. [Reading captures programmatically](#reading-captures-programmatically)
+12. [API reference](#api-reference)
+13. [Troubleshooting / FAQ](#troubleshooting--faq)
 
 ---
 
@@ -41,9 +42,17 @@ Optional LangChain integration:
 pip install "evalshift-sdk[langchain]"   # adds langchain-core>=0.2
 ```
 
-The LangChain adapter module is import-guarded: importing `evalshift.adapters.langchain` without the extra installed does not fail — the SDK stays dependency-free at runtime.
+Optional provider client wrappers (see [Provider client wrappers](#provider-client-wrappers)):
 
-> **Co-install note:** the SDK (import name `evalshift`) and the EvalShift CLI share the same top-level import name. Keep them in separate virtual environments.
+```bash
+pip install "evalshift-sdk[openai]"        # openai>=1.40
+pip install "evalshift-sdk[anthropic]"     # anthropic>=0.40
+pip install "evalshift-sdk[google-genai]"  # google-genai>=1.0
+```
+
+Every adapter module is import-guarded: importing `evalshift.adapters.langchain` (or `.openai`, `.anthropic`, `.genai`) without the matching extra installed does not fail — the SDK stays dependency-free at runtime.
+
+> **Co-install note:** the EvalShift CLI (PyPI `evalshift`, import package `evalshift_cli`) depends on this SDK, so both live in one environment and `pip install evalshift` brings the SDK with it. Production agents that only record captures install `evalshift-sdk` alone.
 
 ---
 
@@ -95,7 +104,7 @@ One capture file appears at `.evalshift/captures/support_demo/cap_<hex>.json` (r
 
 ```json
 {
-  "schema_version": "2.0.0",
+  "schema_version": "2.1.0",
   "capture_id": "cap_203ce5041fe042298d0e3b5b9910e178",
   "suite": "support_demo",
   "input_hash": "3829825837ffeb3415bd0e448838ab18a928378b87175fba1cb053fda13b4100",
@@ -116,6 +125,7 @@ One capture file appears at `.evalshift/captures/support_demo/cap_<hex>.json` (r
         "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "latency_ms": 0,
         "toolset_ref": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
         "tools_offered": [],
+        "requested_tool_calls": null,
         "timestamp": "2026-07-20T22:22:31.081939+00:00",
         "metadata": {"evalshift": {"span_id": "mc_…", "start_ts": 1784586151.081939, "end_ts": 1784586151.081939}}
       },
@@ -202,7 +212,7 @@ Each capture is one JSON file: an **envelope** wrapping a trace.
 
 | Envelope key | Meaning |
 |---|---|
-| `schema_version` | Envelope schema version (currently `"2.0.0"`) |
+| `schema_version` | Envelope schema version (currently `"2.1.0"`) |
 | `capture_id` | Unique id, `cap_<hex>`; also the file name |
 | `suite` | The suite you passed to `@capture.agent` / `agent_session` — the grouping unit on disk |
 | `input_hash` | SHA-256 of the agent's bound input (the raw input itself is not stored at the envelope level); dedup key |
@@ -222,6 +232,7 @@ There are three ways to wrap agent calls. They share the same pipeline and confi
 1. **Decorators** — `@capture.agent` + `@capture.tool` + `record_model_call`: least intrusive, best for a stable agent entry point.
 2. **Context managers** — `capture.agent_session` / `agent_session_async`: for inline instrumentation and multi-turn conversations where per-call values change.
 3. **LangChain callback handler** — zero decorators on your code; see [LangChain integration](#langchain-integration).
+4. **Provider client wrappers** — keep `@capture.agent` on the boundary and let a wrapped `openai` / `anthropic` / `google-genai` client record every model call for you; see [Provider client wrappers](#provider-client-wrappers).
 
 ### The agent boundary
 
@@ -313,6 +324,45 @@ toolsets between calls (one process, one suite, two toolsets, chosen by an `if`)
 a bare list mixing any of those. A value matching none of them is left unstamped (both fields stay
 `None`) rather than guessed at — logged at `debug`, never raised. Details: [docs/DECISIONS.md](docs/DECISIONS.md) D-toolset.
 
+**Offered vs. requested vs. executed.** A `model_call` event records three different facts about
+tools, and they are not interchangeable:
+
+| what | how you record it | field |
+| --- | --- | --- |
+| **offered** — what the model *could* call | `tools=` on this call (above) | `tools_offered` / `toolset_ref` |
+| **requested** — what the model *asked* to call, in its response | `requested_tool_calls=` (below) | `requested_tool_calls` |
+| **executed** — what your app *actually ran* | `@capture.tool` on the function | the `tool_call` / `tool_result` events |
+
+They diverge routinely — a guard rejects a requested call, a router drops it, your app pre-fetches
+a tool the model never asked for, or the process dies before dispatch — and each divergence is
+exactly the thing an eval wants to see, which is why all three are recorded rather than one
+inferred from the others:
+
+```python
+from evalshift import record_model_call
+from evalshift.capture.requested import extract_requested_tool_calls
+
+response = client.messages.create(model="claude-sonnet-5", messages=messages, tools=tools)
+
+record_model_call(
+    model_id="claude-sonnet-5",
+    tools=tools,                                              # offered
+    input=messages,
+    output=response.content[0].text,
+    requested_tool_calls=extract_requested_tool_calls(response.model_dump()),   # requested
+)
+```
+
+`extract_requested_tool_calls` is a stdlib helper that pulls the list out of a raw Anthropic /
+OpenAI / Gemini response; you can also build it by hand as
+`[{"name": ..., "arguments": {...}, "call_id": ...}]`. Each item is normalised to exactly those
+three keys (`arguments` defaults to `{}`, `call_id` to `None`, extra provider keys are dropped).
+Omitting the argument records nothing — `null`, meaning "not recorded", which is *not* the same as
+`[]`, meaning "the model asked for no tools". A malformed value is dropped fail-open (logged at
+`debug`), never raised. Unlike `tools=`, these arguments **are** redacted: they are payload the
+model generated from user input, so they go through the same redactor as a tool call's arguments.
+Details: [docs/DECISIONS.md](docs/DECISIONS.md) D-requested.
+
 **Streaming calls** — use the recorder context manager and accumulate as chunks arrive:
 
 ```python
@@ -335,6 +385,8 @@ async with capture.model_call(model_id="claude-sonnet-5", tools=tools, input=mes
 Recorder behavior:
 
 - Exactly one `model_call` event is recorded on exit, carrying the joined `add_text` output.
+- `rec.set_requested_tool_calls([...])` records what the model asked to call (same contract as
+  `record_model_call`'s argument above); call it before or during the block, last write wins.
 - `latency_ms` is derived automatically from the `with`-block duration unless you pass it to `set_usage`.
 - Without an active session the recorder is inert — no span, no write.
 - Recorder faults never break your streaming loop (fail-open).
@@ -351,6 +403,54 @@ messages = [
 ```
 
 The SDK does not validate this shape (`input` is `Any`), but following the convention makes each capture self-contained for downstream rendering and replay. Details: [docs/SCHEMA.md](docs/SCHEMA.md).
+
+### Extracting requested tool calls from a response
+
+Three different things get called "tools" around a model call: the ones the call was **offered**
+(`tools=`), the ones the model **requested** in its response, and the ones your app actually
+**executed** (`@capture.tool`). A stdlib-only helper derives the middle one from a provider
+response, so you never have to reshape it by hand:
+
+```python
+from evalshift.capture.requested import extract_requested_tool_calls
+
+response = client.messages.create(...)   # any provider
+
+record_model_call(
+    model_id="claude-sonnet-5",
+    tools=tools,
+    input=messages,
+    requested_tool_calls=extract_requested_tool_calls(response),
+)
+```
+
+It is not exported from the package root — import the full path above, like its sibling helpers in
+`evalshift.capture.toolset` and `evalshift.capture.generation`.
+
+It accepts an already-serialised response dict, an object exposing `model_dump()` / `to_dict()`, or
+the provider response object itself (walked by attribute — the SDK imports no provider SDK, not
+even guarded). Recognised shapes: OpenAI Chat Completions (`choices[0].message.tool_calls`, plus
+the deprecated `function_call` form), OpenAI Responses (`output[*]` items of
+`type: "function_call"`), Anthropic Messages (`content[*]` blocks of `type: "tool_use"`), and
+Gemini (`candidates[0].content.parts[*].functionCall`, or `function_call` from the python SDK's
+`to_dict()`). Only the first choice/candidate is read.
+
+Every item is exactly `{"name": str, "arguments": dict, "call_id": str | None}`, in response order
+(`call_id` is `None` where the provider has none — Gemini REST, legacy `function_call`).
+
+**`[]` and `None` are not interchangeable.**
+
+- `[]` — a recognised response in which the model requested no tools. A real, deliberate value:
+  "the model asked for nothing."
+- `None` — the value did not look like a provider response at all, or one of its tool calls had no
+  usable name, in which case the whole response is refused rather than reported one call short
+  (same rule as `normalize_tools`: a list that reads as complete but isn't is worse than no list).
+  Nothing is asserted about what the model requested — pass it straight through rather than
+  substituting `[]`.
+
+The helper never raises. Unparseable JSON `arguments`, JSON that parses to something other than an
+object, and an already-parsed `input`/`args` that is not an object each degrade to `{}` for that
+one call, logged at `debug`.
 
 ### Recording tool calls
 
@@ -599,7 +699,7 @@ def scrub(value):
 def handle_case(record: dict) -> str: ...
 ```
 
-Fields passed to the redactor, per span kind: `tool` → `arguments`, `result`, `error`; `model_call` → `input`, `output`; `retrieval` → `query`, `documents`; `guardrail` → `reason`; `final_output` → `text`; `error` → `message`. `model_call`'s `toolset_ref` / `tools_offered` are deliberately **not** in that list — they are config, not payload, exactly like `generation_config` (which lives outside `span.data` entirely); see [docs/DECISIONS.md](docs/DECISIONS.md) D-toolset for why the two fields are safe from redaction by construction rather than by an explicit skip.
+Fields passed to the redactor, per span kind: `tool` → `arguments`, `result`, `error`; `model_call` → `input`, `output`, `requested_tool_calls`; `retrieval` → `query`, `documents`; `guardrail` → `reason`; `final_output` → `text`; `error` → `message`. `requested_tool_calls` is in that list because a requested call's arguments are payload the model generated from user input, as sensitive as a tool call's own (D-requested). `model_call`'s `toolset_ref` / `tools_offered` are deliberately **not** in that list — they are config, not payload, exactly like `generation_config` (which lives outside `span.data` entirely); see [docs/DECISIONS.md](docs/DECISIONS.md) D-toolset for why the two fields are safe from redaction by construction rather than by an explicit skip.
 
 **What a written capture may still contain.** Redaction masks payload values only. It does not scrub structural metadata (tool names, `model_id`, token counts, timestamps, call ids, the `metadata["evalshift"]` block), the envelope (`capture_id`, `suite`, `code_version`, `input_hash` — a one-way SHA-256; the raw input is never stored at the envelope level), or anything your redactor's patterns miss. `default_redactor` is deliberately conservative and is **not** a comprehensive PII scrubber — supply a domain-specific redactor when your data has structured secrets.
 
@@ -636,7 +736,63 @@ Behavior:
 - A raising redactor drops the capture (fail-closed), chain unaffected.
 - Framework payloads are coerced to JSON-able primitives before recording, so a non-serializable LangChain object can't silently break the capture write.
 - Retriever calls are recorded as `retrieval` events and the chain's final output as a `final_output` event — event kinds the manual API does not emit.
+- `requested_tool_calls` is captured automatically, with no extra wiring: `on_llm_end` reads the response's `AIMessage.tool_calls` — LangChain has already normalised it across providers — and maps `args` → `arguments`, `id` → `call_id` through the same normaliser [`record_model_call`](#record_model_call) uses. A chat model that asked for nothing records `[]`; a plain text (non-chat) completion, which has no message and so cannot ask, records nothing (`null`). `invalid_tool_calls` are deliberately excluded: those are calls whose arguments failed to parse, not requests your app could have dispatched. Streaming needs no special case — the aggregated message reaches `on_llm_end` with its tool calls intact. See [Offered vs. requested vs. executed](#recording-model-calls).
 - **Do not mix** the handler with `@capture.tool`-decorated code on the same call path. The handler deliberately keeps its own run-id-based span bookkeeping (LangChain callbacks fire flat with `run_id`/`parent_run_id`, not nested on the stack) and does not bind the contextvar session — mixing risks double-recording. Use one or the other.
+
+---
+
+## Provider client wrappers
+
+Requires the matching extra: `pip install "evalshift-sdk[openai]"`, `"[anthropic]"`, or `"[google-genai]"`.
+
+If your agent calls a provider SDK directly, you do not have to write `record_model_call` by hand. Wrap the client instance once; every intercepted call made inside an active capture session (`@capture.agent`, `agent_session`, ...) records one `model_call` with `model_id`, the tools offered, the tool calls the model requested, `input`, `output`, token usage, latency and the allow-listed generation settings. Outside a session the wrapper is inert.
+
+```python
+from openai import OpenAI
+from evalshift import capture
+from evalshift.adapters.openai import wrap_openai
+
+client = wrap_openai(OpenAI())          # or AsyncOpenAI(); use the proxy exactly like the client
+
+@capture.agent(suite="support_agent", redact=True, tools=[])
+def handle_ticket(query: str) -> str:
+    r = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role": "user", "content": query}])
+    return r.choices[0].message.content or ""
+```
+
+```python
+from anthropic import Anthropic
+from evalshift.adapters.anthropic import wrap_anthropic
+
+client = wrap_anthropic(Anthropic())    # or AsyncAnthropic()
+```
+
+```python
+from google import genai
+from evalshift.adapters.genai import wrap_genai
+
+client = wrap_genai(genai.Client())     # sync and client.aio both covered
+```
+
+What is intercepted (everything else is forwarded untouched and not recorded):
+
+| Wrapper | Intercepted | Not recorded (still works) |
+| --- | --- | --- |
+| `wrap_openai` | `chat.completions.create`, `responses.create` — sync, async, `stream=True` | `parse` / `beta`, `with_raw_response`, the `.stream()` helper context managers, embeddings, audio, images, files |
+| `wrap_anthropic` | `messages.create` (sync, async, `stream=True`), `messages.stream` (sync and async managers) | `beta`, `messages.batches`, `messages.count_tokens`, `with_raw_response` |
+| `wrap_genai` | `models.generate_content`, `models.generate_content_stream`, and both under `client.aio` | `chats`, `embed_content`, `count_tokens`, `files`, `caches`, `batches`, `tunings`, `live` |
+
+Behaviour, shared by all three (design: [docs/DECISIONS.md](docs/DECISIONS.md) D-wrappers):
+
+- **Wraps the instance, never the module.** Nothing is monkeypatched; a client you did not wrap is untouched. The proxy is not an `isinstance` of the client's class — `evalshift.adapters._wrap.unwrap(proxy)` returns the real client if you need one.
+- **Record-only.** The wrapper opens no session and takes no `suite` / `redact`; the boundary and the masking choice stay on `@capture.agent`. A wrapped client can be shared between captured and uncaptured code paths.
+- **`tools` is asserted per call.** The call's `tools` kwarg (Gemini: `config.tools`) is recorded, or `[]` when the request carried none — the session's `tools=` is never inherited, because a wrapper knows exactly what the provider was sent. Callables passed to Gemini for automatic function calling are declared through the SDK's own converter; a built-in-only tool such as `google_search` normalises to nothing and leaves the toolset unstamped.
+- **Fail-open, and the real call is never guarded.** Provider exceptions propagate exactly as before; a wrapper fault means "this call was not recorded", never a broken client. A request that raised records nothing.
+- **Streaming: the returned stream is a proxy** that forwards every attribute and records once when the stream is exhausted, closed, or fails — with whatever output had arrived. Usage comes from the final chunk when the provider sends one (OpenAI chat streams need `stream_options={"include_usage": True}`, otherwise tokens stay 0). Anthropic's `messages.stream` manager records on `__exit__` from `get_final_message()`. A stream simply abandoned records nothing.
+- **`input` is always a messages-style list**, so the CLI recovers system prompt, history and current turn the same way for every provider: Anthropic's `system`, the Responses API's `instructions` and Gemini's `system_instruction` become a leading `{"role": "system"}` message; Gemini `Content`/`Part` values are folded into role-tagged messages, function calls into `tool_calls` and function responses into `tool` messages. Server-held state (OpenAI `previous_response_id` / `conversation`) is not expanded.
+- **`cost_usd` stays 0.** The CLI prices tokens from litellm's table at promote time (`cost_source: "estimated"`); a model with no price entry (local / self-hosted) legitimately stays at 0.
+- **Open-source models need no wrapper of their own.** Ollama, vLLM, llama.cpp server, LM Studio, TGI, Together, Groq, Fireworks and OpenRouter serve OpenAI-compatible endpoints: `wrap_openai(OpenAI(base_url=...))` covers them unchanged; `model_id` is whatever string you passed, and a server that omits `usage` records zero tokens. Native non-OpenAI clients (the `ollama` package, in-process transformers) keep using [`record_model_call`](#record_model_call) / [`capture.model_call`](#capturemodel_call).
+- **Mixing with the manual API is fine** — a wrapped client inside `@capture.agent` alongside `@capture.tool` is the intended pairing. Do not also call `record_model_call` for the same request, or it is recorded twice.
 
 ---
 
@@ -680,7 +836,7 @@ from evalshift import register_migration
 register_migration("1.1.0", "1.2.0", my_upgrade_fn, description="add foo field")
 ```
 
-`SCHEMA_VERSION` (currently `"2.0.0"`) is the version this SDK writes. Policy details: [docs/SCHEMA.md](docs/SCHEMA.md).
+`SCHEMA_VERSION` (currently `"2.1.0"`) is the version this SDK writes. Policy details: [docs/SCHEMA.md](docs/SCHEMA.md).
 
 ---
 
@@ -737,9 +893,10 @@ rec.add_text(text: str) -> None
 rec.set_usage(*, input_tokens: int = 0, output_tokens: int = 0,
               cost_usd: float = 0.0, latency_ms: int | None = None) -> None
 rec.set_generation_config(config: dict[str, Any]) -> None
+rec.set_requested_tool_calls(calls: Any) -> None
 ```
 
-Streaming model-call recorder. Records exactly one `model_call` event on exit with the joined `add_text` chunks as output. `latency_ms` auto-derives from the block duration unless set via `set_usage`. Inert without an active session — no toolset resolution or sidecar write happens for a no-op either; recorder faults never break the stream loop. `tools` is required, with the same contract as [`record_model_call`](#record_model_call)'s. `generation_config` is allow-listed and JSON-coerced exactly as in `record_model_call`; use `set_generation_config` (last write wins, filtered on the same seven keys) when the effective settings only become known mid-stream.
+Streaming model-call recorder. Records exactly one `model_call` event on exit with the joined `add_text` chunks as output. `latency_ms` auto-derives from the block duration unless set via `set_usage`. Inert without an active session — no toolset resolution or sidecar write happens for a no-op either; recorder faults never break the stream loop. `tools` is required, with the same contract as [`record_model_call`](#record_model_call)'s. `set_requested_tool_calls` records what the model asked to call, also with the same contract as `record_model_call`'s argument — usable before or during the block (a streamed tool call is only complete once its argument deltas have arrived), last write wins. `generation_config` is allow-listed and JSON-coerced exactly as in `record_model_call`; use `set_generation_config` (last write wins, filtered on the same seven keys) when the effective settings only become known mid-stream.
 
 ### `capture.tool`
 
@@ -762,6 +919,7 @@ record_model_call(
     tools: Any,
     input: Any = None,
     output: Any = None,
+    requested_tool_calls: Any = None,
     input_tokens: int = 0,
     output_tokens: int = 0,
     cost_usd: float = 0.0,
@@ -778,9 +936,11 @@ Records an already-complete model call into the active session. No-op outside on
 - `tools=[]` to assert this call genuinely had no tools — a real, first-class value, not a default;
 - `tools=None` to defer to the enclosing session's own `tools=` (`capture.agent` / `agent_session` / `agent_session_async`) instead of asserting one for this call. A call's own non-`None` value always wins over the session's, even across repeated calls in one session that each choose differently — the reason this is per-call at all is that a real agent can switch toolsets mid-run.
 
-A value matching no recognised shape — the call's own, or (when `tools=None`) the session's — normalises to `None`: neither field is stamped (logged at `debug`), leaving the capture structurally invalid for that event rather than guessing. Unlike `generation_config`, toolsets are **not** allow-listed — an `input_schema` is arbitrary user JSON needed in full to dispatch, so normalisation only recognises or rejects tool *shapes*, never prunes keys within a schema. Like `generation_config`, toolsets are config, not payload, and are never redacted — but by a different mechanism: `generation_config` lives outside `span.data` entirely, while the toolset fields are top-level `span.data` fields kept safe only because `model_call`'s redactable-field list names exactly `input` and `output`. See [docs/DECISIONS.md](docs/DECISIONS.md) D-toolset for the full reasoning.
+A value matching no recognised shape — the call's own, or (when `tools=None`) the session's — normalises to `None`: neither field is stamped (logged at `debug`), leaving the capture structurally invalid for that event rather than guessing. Unlike `generation_config`, toolsets are **not** allow-listed — an `input_schema` is arbitrary user JSON needed in full to dispatch, so normalisation only recognises or rejects tool *shapes*, never prunes keys within a schema. The canonical shape a toolset is normalised *to* is `{name, description, input_schema}` plus one optional key: `strict: true`, carried through from OpenAI's `function.strict` or Anthropic's top-level `strict` when it is truthy and omitted entirely otherwise (so pre-existing fingerprints are unchanged). It is the one function-envelope key kept, because a replay that drops it runs the target under a weaker schema constraint than the source did. Like `generation_config`, toolsets are config, not payload, and are never redacted — but by a different mechanism: `generation_config` lives outside `span.data` entirely, while the toolset fields are top-level `span.data` fields kept safe only because `model_call`'s redactable-field list names exactly `input` and `output`. See [docs/DECISIONS.md](docs/DECISIONS.md) D-toolset for the full reasoning.
 
-`generation_config` records the call's generation settings under the event's `metadata["generation_config"]`, so `evalshift capture sync` can replay promoted cases with the same settings (structured-output schemas no longer need hand-mirroring into the CLI config). Exactly seven keys are recorded — `temperature`, `top_p`, `response_mime_type`, `response_schema`, `response_format`, `max_output_tokens`, `max_tokens` — and every other key is dropped, silently apart from a debug log. The allow-list is not tidiness: metadata is config, not payload, so the redactor never walks it, and an unlisted key — `system_instruction` above all, or `safety_settings` — would land in the capture unmasked. Values are coerced to JSON on the way in: primitives, dicts and lists pass through, anything else (a Pydantic `response_schema` class, say) is stored as its `str()` form, so a non-serialisable setting can no longer take the whole capture down at write time. A non-dict `generation_config` is dropped fail-open, as is one the allow-list empties — neither writes the key at all. The LangChain adapter applies the same allow-list to `invocation_params`.
+`requested_tool_calls` (schema 2.1.0, D-requested) records what the **model asked for** in this response — a third fact alongside `tools` (what it was *offered*) and the `tool_call` events (what your app *executed*); see [Offered vs. requested vs. executed](#recording-model-calls) above. Pass a list of `{"name": str, "arguments": dict, "call_id": str | None}` items, typically from `evalshift.capture.requested.extract_requested_tool_calls(response_dict)`. Each item is normalised to exactly those three keys (extra provider keys dropped, `arguments` → `{}`, `call_id` → `None`) because the CLI's `RequestedToolCall` model is `extra="forbid"`. Unlike `tools`, it is **optional**: omitted or `None` records nothing (`null` = "not recorded", distinct from `[]` = "the model requested no tools"). A malformed value — not a list, or a list with no item carrying a usable `name` — is dropped fail-open and logged at `debug`; the event is still recorded. Unlike `tools`, these arguments **are** redacted.
+
+`generation_config` records the call's generation settings under the event's `metadata["generation_config"]`, so `evalshift capture sync` can replay promoted cases with the same settings (structured-output schemas no longer need hand-mirroring into the CLI config). Exactly ten keys are recorded — `temperature`, `top_p`, `response_mime_type`, `response_schema`, `response_format`, `max_output_tokens`, `max_tokens`, `tool_choice`, `parallel_tool_calls`, and `tool_config` (Gemini's spelling of `tool_choice`) — and every other key is dropped, silently apart from a debug log. The allow-list is not tidiness: metadata is config, not payload, so the redactor never walks it, and an unlisted key — `system_instruction` above all, or `safety_settings` — would land in the capture unmasked. The three tool-use keys are the ones a replay needs in order to run the target under the same constraint the source ran under; `parallel_tool_calls: false` survives intact (the filter is `is not None`, never truthiness). Values are coerced to JSON on the way in: primitives, dicts and lists pass through, an object with a `model_dump` method (a `google.genai.types.ToolConfig`, say — duck-typed, never imported) is dumped to a dict, and anything else (a Pydantic `response_schema` class, say) is stored as its `str()` form, so a non-serialisable setting can no longer take the whole capture down at write time. A non-dict `generation_config` is dropped fail-open, as is one the allow-list empties — neither writes the key at all. The LangChain adapter applies the same allow-list to `invocation_params`.
 
 ### `configure`
 
@@ -892,7 +1052,7 @@ Base class of the six typed read errors (see [Reading captures](#reading-capture
 
 ### `SCHEMA_VERSION` / `__version__`
 
-`SCHEMA_VERSION` — the envelope schema version this SDK writes (`"2.0.0"`). `__version__` — the package version (`"0.3.0"`).
+`SCHEMA_VERSION` — the envelope schema version this SDK writes (`"2.1.0"`). `__version__` — the package version (`"0.3.0"`).
 
 ### `EvalShiftCallbackHandler`
 
@@ -904,6 +1064,20 @@ EvalShiftCallbackHandler(*, suite: str, redact: RedactSetting, tools: Any,
 ```
 
 LangChain `BaseCallbackHandler` that records a chain/agent run as one capture per root run. See [LangChain integration](#langchain-integration).
+
+### `wrap_openai` / `wrap_anthropic` / `wrap_genai`
+
+```python
+from evalshift.adapters.openai import wrap_openai        # [openai] extra
+from evalshift.adapters.anthropic import wrap_anthropic  # [anthropic] extra
+from evalshift.adapters.genai import wrap_genai          # [google-genai] extra
+
+wrap_openai(client: C) -> C
+wrap_anthropic(client: C) -> C
+wrap_genai(client: C) -> C
+```
+
+Return a drop-in proxy over a provider client instance that records one `model_call` per intercepted request made inside an active capture session, and is inert outside one. Typed as returning the client's own type for editor ergonomics; at runtime the value is an `evalshift.adapters._wrap.ClientProxy` (`unwrap()` gives the real client back). See [Provider client wrappers](#provider-client-wrappers).
 
 ---
 

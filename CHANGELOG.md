@@ -7,6 +7,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Provider client wrappers: `evalshift.adapters.openai.wrap_openai(client)`,
+  `evalshift.adapters.anthropic.wrap_anthropic(client)` and
+  `evalshift.adapters.genai.wrap_genai(client)` return a drop-in proxy over a
+  client you already built. Inside a capture session every intercepted call
+  (`chat.completions.create` / `responses.create`; `messages.create` /
+  `messages.stream`; `models.generate_content[_stream]` and the `aio` twins —
+  sync, async and streaming) records one `model_call` with `model_id`, the
+  tools offered, `requested_tool_calls`, `input` (always a messages-style list,
+  system prompts folded in as a leading `system` message), `output`, token
+  usage, latency and the allow-listed generation settings. Nothing is
+  monkeypatched, the real call is never guarded, and the wrapper is inert
+  outside a session. New optional extras `[openai]`, `[anthropic]`,
+  `[google-genai]`; the runtime stays stdlib-only. OpenAI-compatible servers
+  (Ollama, vLLM, Groq, OpenRouter ...) are covered by `wrap_openai` with a
+  `base_url`. `cost_usd` stays 0 — the CLI prices tokens at promote time. See
+  `docs/DECISIONS.md` D-wrappers.
+- `generation_config` records three more keys: `tool_choice`,
+  `parallel_tool_calls`, and `tool_config` (Gemini's spelling of `tool_choice`),
+  so `evalshift capture sync` can replay a case under the same tool-use
+  constraint the source ran under instead of silently dropping it.
+  `parallel_tool_calls: false` survives intact — the allow-list filters on
+  `is not None`, never truthiness. The LangChain adapter picks all three up
+  from `invocation_params`, so `bind_tools(tool_choice=...,
+  parallel_tool_calls=False)` is recorded with no extra work.
+- `evalshift.capture.generation.jsonable` now dumps an object exposing a
+  `model_dump` method (a `google.genai.types.ToolConfig`, say — duck-typed via
+  `getattr`, never imported) to a dict rather than its `str()` form, so a
+  Gemini `tool_config` lands as readable JSON. Anything without a usable
+  `model_dump` still degrades to `str()` exactly as before.
+- Normalised tools carry an optional `strict: true` — from OpenAI's
+  `function.strict` or Anthropic's top-level `strict` — alongside
+  `{name, description, input_schema}`. The key is present only when the source
+  tool declared it truthy and omitted entirely otherwise, so every toolset
+  fingerprint written before this change is byte-for-byte unchanged and no
+  `SCHEMA_VERSION` bump is needed. Without it a replay would re-send the schema
+  under a weaker constraint than the source ran under. See `docs/DECISIONS.md`
+  D-toolset.
+- Trace schema `2.1.0`: `model_call` events carry an optional
+  `requested_tool_calls` list of `{name, arguments, call_id}` items — what
+  the *model asked to call* in its response, as distinct from `tools_offered`
+  (what it was allowed to call) and the `tool_call` events (what the app
+  actually ran). `null` means "not recorded", `[]` means "the model requested
+  no tools"; see `docs/DECISIONS.md` D-requested.
+- `record_model_call(..., requested_tool_calls=[...])` and
+  `rec.set_requested_tool_calls([...])` on the `capture.model_call` recorder
+  record that list. Both are optional and fail-open: a malformed value is
+  dropped with a debug log rather than raised, and each item is normalised to
+  exactly `{name, arguments, call_id}` so the capture stays CLI-valid. Unlike
+  `tools=`, these arguments are redacted — they are model-generated payload,
+  so `requested_tool_calls` joins `input` / `output` in `model_call`'s
+  redactable fields.
+- `evalshift.capture.requested.extract_requested_tool_calls(response)` — a
+  stdlib-only helper that reads the tool calls a model *requested* out of an
+  OpenAI (Chat Completions or Responses), Anthropic, or Gemini response, as
+  `{name, arguments, call_id}` items for `record_model_call`. `[]` means the
+  model requested nothing; `None` means the value was not a recognised
+  response (or one of its calls was unreadable) — the two are not
+  interchangeable. Never raises, and imports no provider SDK.
+- The LangChain adapter records `requested_tool_calls` with no extra wiring:
+  `on_llm_end` reads `AIMessage.tool_calls` (already provider-normalised by
+  LangChain) and maps it through the same normaliser `record_model_call` uses.
+  A chat model that asked for nothing records `[]`; a plain text completion,
+  which cannot ask, records nothing. `invalid_tool_calls` are excluded — they
+  are parse failures, not requests.
+
+### Changed
+
+- **Schema `2.0.0` → `2.1.0`** (MINOR, additive). `SUPPORTED_SCHEMA_VERSIONS`
+  is now `("2.0.0", "2.1.0")` and a built-in identity migration upgrades a
+  2.0.0 capture on read — `requested_tool_calls` stays absent (reading back as
+  `None`) rather than being fabricated as `[]`. 1.x captures are still refused
+  with `ObsoleteSchemaVersionError`, unchanged.
+
+- Docs: `docs/DECISIONS.md` §1 and `examples/support_agent/README.md` no
+  longer describe recorded tool results as captured-but-unreplayed. The CLI
+  now carries them as `tool_result_fixtures` (`capture sync --rounds all`) and
+  replays multi-round examples teacher-forced, so the halt-and-flag policy
+  drafted there was never needed; the `input_hash`-keyed `build_fixture_table`
+  remains unread by the CLI.
+- Packaging: the EvalShift CLI (`evalshift` 0.14.0+) now depends on this
+  package and imports as `evalshift_cli`, so the two install into one
+  environment and `pip install evalshift` brings the SDK with it. The
+  "separate virtual environments" rule is gone from the README and DOCS.
+  No code change; `import evalshift` is, as before, this SDK.
+
 ## [0.3.0] - 2026-08-23
 
 First release from the public repository. Compared to 0.2.0 on PyPI:

@@ -75,7 +75,7 @@ Redactable fields, per recorded span kind:
 | Span kind      | Fields passed to the redactor          |
 |----------------|----------------------------------------|
 | `tool`         | `arguments`, `result`, `error`         |
-| `model_call`   | `input`, `output`                      |
+| `model_call`   | `input`, `output`, `requested_tool_calls` |
 | `retrieval`    | `query`, `documents`                   |
 | `guardrail`    | `reason`                               |
 | `final_output` | `text`                                 |
@@ -85,13 +85,19 @@ Because redaction runs **before** serialization, the tool replay-fixture key
 (`(call_id, input_hash)`, D-1) is computed from the **redacted** arguments — the capture stays
 internally consistent.
 
+`requested_tool_calls` (what the model *asked* to call — D-requested, schema 2.1.0) is in the
+table because it is payload: those arguments are values the model generated from the user's input,
+as sensitive as a tool call's own. `default_redactor` walks dicts and lists recursively, so the
+one entry masks every nested argument value; the tool `name` is structural and, like every other
+name, is left alone.
+
 Two `model_call` fields are deliberately outside this table: `toolset_ref` / `tools_offered`
 (the toolset a call was offered — D-toolset). They are config, not payload, the same class as
 `metadata["generation_config"]` — but safe from redaction by a different mechanism, worth stating
 precisely. `generation_config` lives in `span.metadata`, which `redact_tree` never walks at all.
 `toolset_ref` / `tools_offered` are top-level `span.data` fields — the same dict `input` /
-`output` live in — and are safe only because the table above names exactly `input` and `output`
-for `model_call`; neither toolset field is in it. If a tool's `description` or `input_schema`
+`output` / `requested_tool_calls` live in — and are safe only because the table above names
+`model_call`'s redactable fields one by one; neither toolset field is among them. If a tool's `description` or `input_schema`
 carries something sensitive, it reaches the toolset sidecar (`<base>/toolsets/<hex>.json`)
 unmasked. Tool definitions are expected to be static, developer-authored schemas, not
 user-provided payload — the same assumption `generation_config` already makes — but if that

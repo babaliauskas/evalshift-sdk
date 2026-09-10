@@ -174,11 +174,11 @@ def register_migration(
 
 
 def reset_migrations() -> None:
-    """Clear the registry back to its built-in state (currently empty).
+    """Clear the registry back to its built-in state (today: the 2.0.0 -> 2.1.0 identity edge).
 
     Used for test isolation: tests register synthetic migrations and call this afterwards.
-    :func:`_register_builtins` is always re-run afterwards so a future built-in edge would be
-    re-seeded the same way, but today's SDK ships **no** built-in migration -- see its docstring.
+    :func:`_register_builtins` is always re-run afterwards, so every built-in edge is re-seeded
+    and a reset registry is never actually empty -- see its docstring.
     """
     with _LOCK:
         _REGISTRY.clear()
@@ -194,17 +194,37 @@ def registered_migrations() -> tuple[Migration, ...]:
 # --- built-in migrations ------------------------------------------------------------------------
 
 
+def _migrate_2_0_0_to_2_1_0(envelope: dict[str, Any]) -> dict[str, Any]:
+    """2.0.0 -> 2.1.0: identity.
+
+    Schema 2.1.0 added the optional ``requested_tool_calls`` field to ``model_call`` events. It is
+    purely additive with an honest default, so nothing is rewritten: a 2.0.0 capture simply has no
+    such key, and both the dataclass default and :func:`event_from_dict` read that back as
+    ``None`` ("not recorded"). Fabricating ``[]`` here would instead assert the model requested no
+    tools on every legacy call -- the same dishonesty 2.0.0 refused for ``tools_offered``. The
+    edge exists only so 2.0.0 captures stay *reachable* by ``_build_chain`` (see
+    ``docs/SCHEMA.md``'s minor-bump footnote: a version with no outgoing edge is unreadable).
+    """
+    return dict(envelope)
+
+
 def _register_builtins() -> None:
     """(re-)register every built-in schema-version migration this SDK currently ships.
 
     Called once at module import and again from :func:`reset_migrations`, so any built-in
-    migration always exists regardless of test isolation resetting the registry. Currently
-    registers nothing: schema 2.0.0 deliberately ships no migration from the 1.x major (see
-    :class:`ObsoleteSchemaVersionError`) -- the 1.0.0 -> 1.1.0 conversation-identity migration
-    this function used to register was removed when 2.0.0 shipped, since it no longer reaches a
-    supported version. The next bump that *does* register a built-in migration adds its
+    migration always exists regardless of test isolation resetting the registry. Today that is
+    exactly one edge -- the identity step :func:`_migrate_2_0_0_to_2_1_0` -- and deliberately
+    **no** edge out of the 1.x major (see :class:`ObsoleteSchemaVersionError`): the 1.0.0 -> 1.1.0
+    conversation-identity migration this function used to register was removed when 2.0.0 shipped,
+    since it no longer reaches a supported version. The next bump adds its
     ``register_migration(...)`` call here.
     """
+    register_migration(
+        "2.0.0",
+        "2.1.0",
+        _migrate_2_0_0_to_2_1_0,
+        description="additive requested_tool_calls on model_call (identity)",
+    )
 
 
 _register_builtins()  # seed the registry at import time — see reset_migrations for the mirror call

@@ -177,6 +177,57 @@ def _llm_usage(response: Any) -> tuple[str, int, int]:
     return output_text, input_tokens, output_tokens
 
 
+def _tool_call_field(item: Any, key: str) -> Any:
+    """Read one field from a LangChain ``ToolCall`` -- a ``TypedDict``, so normally a plain dict.
+
+    Falls back to attribute access so a provider integration handing back an object-shaped call
+    (or a partially-constructed test double) still reads, rather than being silently dropped.
+    """
+    if isinstance(item, dict):
+        return item.get(key)
+    return getattr(item, key, None)
+
+
+def _requested_tool_calls(response: Any) -> list[dict[str, Any]] | None:
+    """The tool calls the model *asked for*, from an ``LLMResult``'s chat message (D-requested).
+
+    LangChain has already normalised the provider's response: ``AIMessage.tool_calls`` items are
+    ``{"name": str, "args": dict, "id": str | None, "type": "tool_call"}`` whatever the model
+    behind the chain was. So the raw-response walking in
+    :mod:`evalshift.capture.requested` is not needed here -- only a rename (``args`` ->
+    ``arguments``, ``id`` -> ``call_id``, ``type`` dropped) before the *same* normaliser the
+    manual ``record_model_call`` uses, so an empty name is dropped and a non-dict ``args``
+    degrades to ``{}`` identically on both paths.
+
+    ``invalid_tool_calls`` is deliberately **not** read: those are calls whose arguments failed to
+    parse -- LangChain's record of a malformed generation, not a request an app could have
+    dispatched.
+
+    ``[]`` and ``None`` mean different things (D-requested), and the generation shape decides
+    which: a chat generation carries an ``AIMessage``, so "no tool calls" there is the real value
+    ``[]`` ("the model asked for nothing"); a plain text ``Generation`` has no ``.message`` at all
+    and asserts nothing, so the field is left unrecorded (``None``).
+    """
+    generations = getattr(response, "generations", None) or []
+    if not generations or not generations[0]:
+        return None
+    message = getattr(generations[0][0], "message", None)
+    if message is None:
+        return None  # a non-chat Generation says nothing about tool calls
+    raw = getattr(message, "tool_calls", None) or []
+    if not isinstance(raw, (list, tuple)):
+        return api._normalize_requested_tool_calls(raw)  # unreadable shape -> logged, None
+    mapped = [
+        {
+            "name": _tool_call_field(item, "name"),
+            "arguments": _tool_call_field(item, "args"),
+            "call_id": _tool_call_field(item, "id"),
+        }
+        for item in raw
+    ]
+    return api._normalize_requested_tool_calls(mapped)
+
+
 @dataclass
 class _Session:
     """Per-root-run capture state. ``inert`` sessions (gate off / sampled out) record nothing."""
@@ -211,6 +262,12 @@ class EvalShiftCallbackHandler(BaseCallbackHandler):
     ``record_model_call`` — LangChain callbacks carry no user-supplied ``tools`` kwarg, so the
     handler *is* the "session" and its one constructor-time value is authoritative for its whole
     lifetime. Pass ``tools=[]`` if this chain never binds tools — a real, asserted value.
+
+    ``requested_tool_calls`` needs no wiring at all (D-requested): ``on_llm_end`` reads the tool
+    calls the model *asked for* straight off the response's ``AIMessage.tool_calls``, which
+    LangChain has already normalised across providers. A chat model that asked for nothing records
+    ``[]``; a plain text completion, which cannot ask, records nothing. Streaming needs no special
+    case — the aggregated message reaches ``on_llm_end`` with its tool calls intact.
     """
 
     def __init__(
@@ -472,9 +529,20 @@ class EvalShiftCallbackHandler(BaseCallbackHandler):
     ) -> None:
         with safety.fail_open("langchain on_llm_end"):
             output, input_tokens, output_tokens = _llm_usage(response)
-            self._close_span(
-                run_id, output=output, input_tokens=input_tokens, output_tokens=output_tokens
+            data: dict[str, Any] = {
+                "output": output,
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            }
+            # Guarded separately so an exploding message property costs the requested calls, not
+            # the whole span close. ``None`` -> the key is never written, exactly as
+            # ``record_model_call`` leaves it off (absent means "not recorded", never ``[]``).
+            requested = safety.guard(
+                "langchain requested tool calls", lambda: _requested_tool_calls(response)
             )
+            if requested is not None:
+                data["requested_tool_calls"] = requested
+            self._close_span(run_id, **data)
             self._finish_root(run_id, final_output=output)
 
     def on_llm_error(

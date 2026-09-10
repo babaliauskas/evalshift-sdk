@@ -1,15 +1,18 @@
 # Decision records — evalshift-sdk
 
 Locked design decisions for the capture SDK. Each entry: decision, rationale, status.
-See `IMPLEMENTATION_PLAN.md` for the phased roadmap.
+Phase numbers in the headings and in the *Implemented in Phase N* notes are this repo's internal
+build order, not a published roadmap; `CHANGELOG.md` records what shipped in each release.
 
 ## Packaging & toolchain (locked, Phase 0)
 
 ### D-pkg — standalone repo, dist `evalshift-sdk`, import `evalshift`
 New repo `evalshift-sdk/`. Distribution name `evalshift-sdk`; **top-level import `evalshift`**
 (honors the spec's `import evalshift`). Co-installing the CLI (`evalshift`) and `evalshift-sdk`
-in one env clashes on the `evalshift` top-level package — tracked as **D1-followup** (unify
-later: CLI depends on SDK, or a `[cli]` extra). Not a v1 blocker; prod agents install the SDK only.
+in one env used to clash on the `evalshift` top-level package (**D1-followup**). Resolved
+2026-09-09 on the CLI side: the CLI's import package is `evalshift_cli` and it depends on
+`evalshift-sdk`, so the two co-install and `import evalshift` is always this SDK. This package
+is unchanged. Design: `evalshift-cli/docs/superpowers/specs/2026-09-09-namespace-collision-design.md`.
 
 ### D-py — `requires-python = ">=3.10"`
 Do **not** inherit the CLI's floor (3.14 at the time; lowered to 3.11 in CLI 0.13.0) — it would
@@ -33,6 +36,23 @@ CLI default policy is **halt-and-flag** (a CLI concern). The SDK schema MUST sto
 `tool_result` as a **fixture keyed by `call_id` + input hash** so CLI replay can look it up —
 capture doubles as a tool-result fixture. *Implemented in Phase 1 serialize.*
 
+**Status (2026-09-09) — recorded results are replayed; the halt-and-flag policy turned out to be
+unnecessary.** The SDK half is unchanged: every `tool_result` event carries its `call_id`, its
+`result`, and a `metadata["evalshift"]["input_hash"]`, and `build_fixture_table`
+(`trace/serialize.py`) derives the `(call_id, input_hash) -> result` lookup from them. The CLI
+consumes the *events*, not that table (`grep -rn fixture_table evalshift-cli/src` is still empty):
+`evalshift capture promote` / `capture sync --rounds all` pair each round's tool calls with that
+round's `tool_result` events by `call_id`, then by name within the round, and carry the results on
+the promoted case as `tool_result_fixtures`; `evalshift run` then replays the example
+**teacher-forced** — round *k* sees the prompt plus the *recorded* rounds `1..k-1` as assistant tool
+calls and tool results, never the candidate's own calls — for every covered round plus the answer
+round after it, and the tool evaluators score each round against its own ground truth. Because the
+candidate's calls are never executed or fed back, "candidate called a tool with no fixture" cannot
+arise, so no halt-and-flag-vs-substitute decision was needed; self-conditioned replay (which would
+need it, plus a name+argument lookup on the `input_hash` table) is deferred. The default stays
+`--rounds first` (single-shot, round 1 only) for cost. Design:
+`evalshift-cli/docs/superpowers/specs/2026-09-09-teacher-forced-replay-design.md`.
+
 ### 2. Nondeterminism (N-sample)
 A CLI/run concern. The SDK records one observed run; no schema change.
 
@@ -48,9 +68,10 @@ are masked in `build_capture` **before** serialization, so trace events and the 
 may still contain) is documented in `docs/REDACTION.md`. See D-4a / D-4b for the policy choices.
 
 ### 5. Trace `schema_version`
-SDK trace schema is versioned independently of the CLI artifact version; `SCHEMA_VERSION = "1.0.0"`
-frozen in `src/evalshift/trace/schema.py`. *Migration path implemented in Phase 8 — see D-8 and
-`docs/SCHEMA.md`.* See D-5b for where the version is emitted.
+SDK trace schema is versioned independently of the CLI artifact version and frozen in
+`src/evalshift/trace/schema.py` (`SCHEMA_VERSION`, `"2.1.0"` today; it was `"1.0.0"` when this
+decision was taken). *Migration path implemented in Phase 8 — see D-8 and `docs/SCHEMA.md`.* See
+D-5b for where the version is emitted.
 
 ## Phase-0 implementation decisions (confirmed this session)
 
@@ -241,6 +262,15 @@ policy in `docs/SCHEMA.md`.
   `NoMigrationPathError` a missing registry edge would otherwise leak. A missing edge *within* a
   major still raises the raw `NoMigrationPathError`, unchanged — that's a registry bug, not an
   obsolete capture.
+- **A MINOR bump registers an identity edge, and that edge is not decorative.** *(Added at schema
+  2.1.0.)* `2.1.0` added the additive `requested_tool_calls` field to `model_call` (D-requested)
+  and registers `_migrate_2_0_0_to_2_1_0`, a no-op step, in `_register_builtins()` — the registry's
+  only built-in edge. `_build_chain` walks by exact `from_version`, so a version with no outgoing
+  edge is simply unreachable; without this step every 2.0.0 capture would raise
+  `NoMigrationPathError` on read. The step deliberately does **not** default the new field to `[]`:
+  absent stays absent and reconstructs as `None` ("not recorded"), because fabricating `[]` would
+  assert the model requested no tools on every pre-2.1.0 call — the same dishonesty the previous
+  bullet refused for `tools_offered`. `SUPPORTED_SCHEMA_VERSIONS` is therefore `("2.0.0", "2.1.0")`.
 - **Linear chain, forward-only.** One registered outgoing step per version
   (`register_migration` / `reset_migrations`), walked from source to current; no downgrade path. A
   missing step raises `NoMigrationPathError`. The migrated input is never mutated (a deep copy is
@@ -308,6 +338,21 @@ policy in `docs/SCHEMA.md`.
 - **No allow-list**, unlike `generation_config`. An `input_schema` is arbitrary user JSON needed in
   full to dispatch the tool; normalisation only recognises or rejects tool *shapes* (Anthropic /
   OpenAI / Gemini), never prunes keys within a schema.
+- **`strict` is the one function-envelope key carried besides the three.** The canonical shape is
+  `{name, description, input_schema}` plus an optional `strict: true` — from OpenAI's
+  `function.strict` or Anthropic's top-level `strict`. Every other envelope key (provider-specific
+  decoration) is still dropped; `strict` is not decoration. It changes what the *provider*
+  enforces: with it, the API guarantees the arguments validate against `input_schema`. A replay
+  that re-sends the schema without the flag runs the target under a weaker constraint than the
+  source ever did, and every argument-drift number measured that way silently compares two
+  different regimes. (The "never prunes keys" rule above is about keys *within* `input_schema`,
+  and is unchanged.) Present **only when truthy**, never as `"strict": false`: absent and
+  explicitly-false say the same thing, and collapsing them keeps the canonical dict — and so every
+  fingerprint written before this key existed, including the pinned SDK/CLI vectors — byte-for-byte
+  identical. The recorded value is the canonical `True`, so `strict: 1` and `strict: true`
+  fingerprint alike. Gemini's `FunctionDeclaration` has no equivalent and never gains one.
+  The sidecar is content-addressed, not versioned, so this needs no `SCHEMA_VERSION` bump: a
+  strict toolset simply hashes to a different sidecar than the same toolset without it.
 - **Not redacted, like `generation_config` — but for a different mechanical reason**, stated
   precisely so nobody "fixes" it later. `generation_config` is exempt because it lives in
   `span.metadata`, which `redact_tree` (`redaction/base.py`) never walks. `tools_offered` /
@@ -341,9 +386,136 @@ policy in `docs/SCHEMA.md`.
   contextvar-bleed class the sibling/nested `parent_call_id` tests above it already guard, now
   guarded for toolsets too).
 
+## Model-requested tool calls (confirmed this session)
+
+### D-requested — requested ≠ executed; both are recorded
+Schema 2.1.0 adds `requested_tool_calls` to `model_call` events. A `model_call` now carries three
+different, non-interchangeable facts about tools:
+
+| field | question | source |
+| --- | --- | --- |
+| `tools_offered` / `toolset_ref` | what *could* be called | the `tools=` passed at the call (D-toolset) |
+| `requested_tool_calls` | what the model *asked* to call | the provider's response |
+| the `tool_call` / `tool_result` events | what the app *actually ran* | `@capture.tool` |
+
+- **Why both, rather than deriving one from the other:** they diverge routinely, and every
+  divergence is a real signal. An app can ignore a requested call (a guard rejects it, a router
+  drops it), run a tool the model never asked for (a hard-coded pre-fetch), request two and execute
+  one, or crash between the response and dispatch. Inferring "requested" from the executed
+  `tool_call` events erases exactly the cases worth evaluating — a model that asks for the wrong
+  tool looks identical to an app that refused to run the right one. The CLI prefers
+  `requested_tool_calls` as ground truth for tool-selection scoring when it is present, and falls
+  back to the executed calls when it is not; that fallback is only sound because "not recorded"
+  (`None`) is distinguishable from "the model requested nothing" (`[]`).
+- **Shape:** each item is exactly `{name, arguments, call_id}` — a strict `RequestedToolCall`
+  model on the CLI side (`extra="forbid"`, `arguments` defaults to `{}`, `call_id` to `None`), a
+  plain `dict` in the SDK's stdlib dataclass (`list[dict[str, Any]] | None`), which needs no nested
+  dataclass at runtime (D-deps). `call_id` is the provider's own id (Anthropic `toolu_…`, OpenAI
+  `call_…`) where one exists, so a reader can line a requested call up against the `tool_call`
+  event the app emitted for it; it is `None` for providers that don't issue one.
+- **Ordering vs. the CLI.** The CLI's trace models are `extra="forbid"`, so it must accept the
+  field before the SDK writes it. The CLI added it first; the SDK emits it from schema 2.1.0 on.
+  The field sits immediately after `tools_offered` in `trace/models.py`,
+  `schema.EVENT_FIELDS["model_call"]`, and the vendored CLI mirror, mirroring the CLI class body.
+- **Recorded at both model-call entry points, and optional at both.** `record_model_call(...,
+  requested_tool_calls=[...])` for an atomic call; `rec.set_requested_tool_calls([...])` on the
+  `capture.model_call` recorder for a streamed one (before or during the block, last write wins —
+  a streamed tool call is complete only once its argument deltas have arrived). A caller who
+  records nothing gets `None`, not a `TypeError`: the D-toolset / D-4c "required keyword"
+  reasoning does not transfer, because an absent toolset is indistinguishable from a real empty
+  one and silently corrupts an eval, whereas `None` here is an honest, distinguishable "not
+  recorded" that the CLI's fallback already handles. Requiring it would also break every existing
+  call site for a value most callers can only produce by parsing a provider response.
+- **The LangChain adapter fills it in for free.** `on_llm_end` reads the response's
+  `AIMessage.tool_calls`, which LangChain has already normalised across providers into
+  `{name, args, id, type}`, so the adapter only renames (`args` → `arguments`, `id` → `call_id`)
+  and hands the result to the same `_normalize_requested_tool_calls` the manual entry points use —
+  never to `extract_requested_tool_calls`, which exists for *raw* provider responses. The
+  `[]`/`None` split falls out of the generation shape: a chat generation carries an `AIMessage`,
+  so no tool calls there is the real value `[]`, while a plain text `Generation` has no `.message`
+  and asserts nothing (`None`). `invalid_tool_calls` are excluded — a call whose arguments failed
+  to parse is a malformed generation, not a request the app could have dispatched.
+- **Normalised to exactly `{name, arguments, call_id}` at the capture point**, because the CLI's
+  `RequestedToolCall` is `extra="forbid"` — a raw Anthropic `{"type": "tool_use", "id": ...}` or
+  OpenAI `{"index": 0, "function": {...}}` item would fail validation. `name` is the only
+  load-bearing key: an item without a usable one is dropped, while a non-dict `arguments`
+  degrades to `{}` (knowing the model asked for `issue_refund` is worth keeping even when the
+  arguments were unreadable) and a non-string `call_id` is stringified.
+- **Fail-open, like every other value on the capture path.** A non-list, or a list from which no
+  item survives normalisation, is dropped (logged at `debug`) and the enclosing `model_call` event
+  is still recorded. A non-empty list that normalises to nothing becomes `None`, never `[]` — "we
+  could not read what the model asked for" is not "it asked for nothing". Building the list from
+  a raw provider response is `evalshift.capture.requested.extract_requested_tool_calls`, a stdlib
+  helper the caller opts into rather than something the recording path does implicitly.
+- **Redacted, unlike the toolset fields.** `requested_tool_calls` is *payload*, not config: the
+  arguments are values the model generated from the user's input and routinely carry the same PII
+  a `tool_call`'s `arguments` do. So it is listed in `_REDACTABLE_FIELDS["model_call"]`
+  (`redaction/base.py`) and passes through the same redactor as tool arguments (D-4c) — the
+  deliberate opposite of `tools_offered` / `toolset_ref`, which name schemas, not values
+  (D-toolset). `default_redactor` walks dicts and lists recursively, so the one entry covers every
+  nested argument value. This is also the counter-example that keeps D-toolset's warning honest:
+  `model_call` now has both redacted and unredacted top-level `span.data` fields, so that tuple
+  must keep naming fields one by one.
+- **Verified by:** `tests/test_serialize.py` and `tests/test_migrate_reconstruct.py` (the
+  pass-through and round-trip, plus a 2.0.0 envelope loading with the field `None`),
+  `tests/test_migrate.py` (the built-in identity edge), `tests/conformance/test_parity.py`
+  (the vendored strict `RequestedToolCall`), `tests/test_capture_requested_tool_calls.py` (both
+  entry points sync and async, normalisation, the fail-open degrades, and the redaction pass),
+  `tests/test_redaction.py` (the `_REDACTABLE_FIELDS` entry itself),
+  `tests/adapters/test_langchain.py` (the adapter's `AIMessage.tool_calls` mapping, the
+  `[]`-vs-`None` split, and its redaction pass), and
+  `tests/conformance/test_capture_conformance.py` (an end-to-end written capture carrying
+  provider-shaped items still validating against the vendored CLI model).
+
+## Provider client wrappers (confirmed 2026-09-09)
+
+### D-wrappers — proxies over the user's client, one `model_call` per request
+`evalshift.adapters.openai.wrap_openai(client)`, `adapters.anthropic.wrap_anthropic(client)` and
+`adapters.genai.wrap_genai(client)` return a drop-in proxy over a client the user already
+constructed. The proxy forwards every attribute and replaces only the completion methods
+(`chat.completions.create` / `responses.create`; `messages.create` / `messages.stream`;
+`models.generate_content` and its async/stream forms). Each intercepted call records exactly one
+`model_call` through `record_model_call`, populated with `model_id`, `tools`, `input`, `output`,
+`input_tokens`, `output_tokens`, `latency_ms`, `generation_config` (the raw kwargs, allow-listed
+by `GENERATION_KEYS`) and `requested_tool_calls` (via `extract_requested_tool_calls`).
+
+- **Wrap the instance, never the module.** Monkeypatching `openai.resources...` would affect every
+  client in the process, including ones the user never meant to capture, and would break the
+  moment two libraries patch the same method. A proxy is local to the object the user handed us.
+- **Record-only, session-owned.** A wrapper opens no agent session and takes no `suite` /
+  `redact`: the user still marks the boundary with `@capture.agent` (which is where masking is
+  chosen, D-4c). Outside a session the wrapper is inert. This keeps one capture point per
+  capture, and lets a wrapped client be shared between captured and uncaptured code paths.
+- **`tools` is always asserted per call.** A wrapper sees exactly what the provider was sent, so
+  it records the call's `tools` kwarg, or `[]` when absent — never `None` (inherit the session's).
+  A session-level toolset cannot be what the model was offered if the request carried none.
+- **Fail-open, and the real call is never guarded.** The provider call's exceptions propagate
+  untouched; a wrapper fault degrades to "not recorded". A failed request records nothing
+  (`model_call` has no error slot; the agent-level error event still fires).
+- **Streaming: wrap the iterator.** The returned stream is a proxy that forwards every attribute
+  and records once when the stream is exhausted, closed, or fails — with whatever output had
+  arrived, and usage from the final chunk when the provider sends one. A stream that is simply
+  abandoned records nothing; there is no hook to know the caller is done.
+- **`cost_usd` stays 0 in the SDK.** Pricing belongs to the CLI (`utils/cost.py`, litellm's
+  price table) and is applied at promote/report time (plan Task 5.5). A model with no price entry
+  (local / self-hosted) legitimately stays at 0.
+- **Extras:** `evalshift-sdk[openai]`, `[anthropic]`, `[google-genai]`. Each module import-guards
+  its SDK; the runtime stays stdlib-only (D-deps). The wrappers never `isinstance` a provider
+  type — shapes are duck-typed, as `capture/toolset.py` and `capture/requested.py` already do.
+- **Open-source models need no wrapper of their own.** Ollama, vLLM, llama.cpp server, LM Studio,
+  TGI, Together, Groq, Fireworks and OpenRouter serve OpenAI-compatible endpoints, so
+  `wrap_openai(OpenAI(base_url=...))` covers them unchanged; `model_id` is whatever string the
+  caller passed and a server that omits `usage` records zero tokens (never gates promotion).
+  Native non-OpenAI clients (the `ollama` package, in-process transformers) keep using
+  `record_model_call` / `capture.model_call`. Replaying open-model *targets* is the CLI's job via
+  litellm prefixes and is independent of the wrappers.
+- **Shared base:** `adapters/_wrap.py` holds the proxy, timing, stream proxies and fail-open
+  plumbing; a provider module contributes only `describe` (kwargs → `CallSpec`), `complete`
+  (response → `Completion`), `is_stream` and `on_chunk` / `on_stream_end`.
+
 ## Open follow-ups (not blocking v1)
-- **D1-followup:** unify packaging so CLI + SDK co-install cleanly (CLI-depends-on-SDK, or a single
-  dist with a `[cli]` extra).
+- ~~**D1-followup:** unify packaging so CLI + SDK co-install cleanly~~ — resolved 2026-09-09 in
+  the CLI-depends-on-SDK form; see D-pkg.
 - **Outcome-aware dedup key** so a success can't suppress a later identical-input failure.
 - **Cross-process / on-disk dedup** (the v1 registry is per-process, in-memory).
 - **GC throttling** (every-Nth-write or a background thread) if profiling shows latency at large

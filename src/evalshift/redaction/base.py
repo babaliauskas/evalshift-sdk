@@ -28,10 +28,15 @@ class Redactor(Protocol):
 
 
 #: Per span kind, the ``span.data`` fields that may carry user content and must be redacted.
-#: Structural fields (``name``, ``model_id``, token counts, …) are intentionally excluded.
+#: Structural fields (``name``, ``model_id``, token counts, …) are intentionally excluded, as are
+#: config fields (``tools_offered`` / ``toolset_ref`` name tool *schemas*, not values — D-toolset).
+#: ``requested_tool_calls`` **is** listed: the arguments a model asked to call a tool with are
+#: values it generated from the user's input, exactly as sensitive as a ``tool`` span's
+#: ``arguments`` (D-requested). ``default_redactor`` walks dicts and lists recursively, so one
+#: entry covers every nested argument value.
 _REDACTABLE_FIELDS: dict[str, tuple[str, ...]] = {
     "tool": ("arguments", "result", "error"),
-    "model_call": ("input", "output"),
+    "model_call": ("input", "output", "requested_tool_calls"),
     "retrieval": ("query", "documents"),
     "guardrail": ("reason",),
     "final_output": ("text",),

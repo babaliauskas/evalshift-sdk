@@ -16,20 +16,21 @@ from typing import Final
 
 #: Frozen SDK trace schema version (sibling to the CLI artifact version). Emitted in the
 #: capture envelope, not the trace itself.
-SCHEMA_VERSION: Final = "2.0.0"
+SCHEMA_VERSION: Final = "2.1.0"
 
 #: Envelope schema versions this SDK can read (after upgrade-on-read in ``trace/migrate.py``).
 #: Older versions migrate up to ``SCHEMA_VERSION`` via the registered migration chain in
-#: ``trace/migrate.py`` -- when one is registered. ``2.0.0`` added ``toolset_ref`` /
-#: ``tools_offered`` to ``model_call`` and, deliberately, registers **no** migration from the 1.x
-#: major: inventing a ``tools_offered`` value for a capture that predates per-call toolset capture
-#: would assert it ran with no tools offered, which may be false. A capture whose
-#: ``schema_version`` is older than ``SCHEMA_VERSION`` and shares its major still migrates via a
-#: registered edge; an older *major* with no edge raises ``ObsoleteSchemaVersionError`` instead of
-#: being silently upgraded, and a newer major raises ``UnsupportedSchemaVersionError`` -- see
-#: ``trace/migrate.py`` and ``docs/SCHEMA.md`` for the full policy (including the newer-minor
-#: best-effort tolerance this tuple doesn't capture).
-SUPPORTED_SCHEMA_VERSIONS: Final[tuple[str, ...]] = ("2.0.0",)
+#: ``trace/migrate.py``. ``2.1.0`` added the additive ``requested_tool_calls`` field to
+#: ``model_call`` and registers the identity edge ``2.0.0 -> 2.1.0``, so ``2.0.0`` stays readable.
+#: ``2.0.0`` added ``toolset_ref`` / ``tools_offered`` to ``model_call`` and, deliberately,
+#: registers **no** migration from the 1.x major: inventing a ``tools_offered`` value for a
+#: capture that predates per-call toolset capture would assert it ran with no tools offered, which
+#: may be false. A capture whose ``schema_version`` is older than ``SCHEMA_VERSION`` and shares its
+#: major still migrates via a registered edge; an older *major* with no edge raises
+#: ``ObsoleteSchemaVersionError`` instead of being silently upgraded, and a newer major raises
+#: ``UnsupportedSchemaVersionError`` -- see ``trace/migrate.py`` and ``docs/SCHEMA.md`` for the
+#: full policy (including the newer-minor best-effort tolerance this tuple doesn't capture).
+SUPPORTED_SCHEMA_VERSIONS: Final[tuple[str, ...]] = ("2.0.0", "2.1.0")
 
 #: Discriminator values for the ``TraceEvent`` union (CLI ``type`` field).
 EVENT_TYPES: Final[tuple[str, ...]] = (
@@ -76,6 +77,7 @@ EVENT_FIELDS: Final[dict[str, tuple[str, ...]]] = {
         "latency_ms",
         "toolset_ref",
         "tools_offered",
+        "requested_tool_calls",
     ),
     "tool_call": (*BASE_EVENT_FIELDS, "name", "arguments", "call_id", "parent_call_id"),
     "tool_result": (*BASE_EVENT_FIELDS, "name", "call_id", "result", "error"),

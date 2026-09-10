@@ -12,5 +12,5 @@ def test_package_exposes_version() -> None:
 
 
 def test_schema_version_frozen() -> None:
-    assert evalshift.SCHEMA_VERSION == "2.0.0"
-    assert schema.SCHEMA_VERSION == "2.0.0"
+    assert evalshift.SCHEMA_VERSION == "2.1.0"
+    assert schema.SCHEMA_VERSION == "2.1.0"

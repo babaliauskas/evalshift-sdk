@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 
 from evalshift import capture, record_model_call
-from tests.conformance.cli_models_vendored import AgentTrace, CaptureEnvelope
+from tests.conformance.cli_models_vendored import AgentTrace, CaptureEnvelope, ModelCallEvent
 from tests.conftest import CaptureReader
 
 
@@ -90,3 +90,32 @@ def test_conversation_turn_written_via_agent_session_is_cli_valid(
     assert validated.conversation_id == "conv_1"
     assert validated.turn_index == 2
     assert validated.parent_capture_id == "cap_prev"
+
+
+def test_written_requested_tool_calls_validate_against_cli_model(
+    capturing: Path, read_captures: CaptureReader
+) -> None:
+    """A capture carrying what the model *asked for* stays CLI-valid: the CLI's strict
+    ``RequestedToolCall`` is ``extra="forbid"``, so the SDK's normalisation to exactly
+    ``{name, arguments, call_id}`` is what makes this pass (schema 2.1.0, D-requested)."""
+
+    @capture.agent(suite="support_agent", redact=False, tools=[])
+    def requesting() -> None:
+        record_model_call(
+            model_id="claude-opus-4-8",
+            tools=[],
+            output="",
+            requested_tool_calls=[
+                {"type": "tool_use", "name": "search", "arguments": {"q": "x"}, "call_id": "t1"},
+                {"name": "summarize"},
+            ],
+        )
+
+    requesting()
+    cap = read_captures("support_agent")[0]
+    trace = AgentTrace.model_validate(cap["trace"])
+    [model_call] = [e for e in trace.events if isinstance(e, ModelCallEvent)]
+    assert model_call.requested_tool_calls is not None
+    assert [call.name for call in model_call.requested_tool_calls] == ["search", "summarize"]
+    assert model_call.requested_tool_calls[1].arguments == {}
+    assert model_call.requested_tool_calls[1].call_id is None

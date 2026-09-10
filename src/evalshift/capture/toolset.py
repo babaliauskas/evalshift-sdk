@@ -5,8 +5,9 @@ Every provider shapes "the list of tools an agent was offered" differently: Anth
 Gemini's ``types.Tool(function_declarations=[...])``. :func:`normalize_tools` reduces any of
 those -- or a bare sequence (list, tuple, ...) mixing them -- to the one shape the rest of the
 product agrees on:
-``{name, description, input_schema}``. :func:`fingerprint_tools` then content-addresses an
-already-normalised list, so a toolset can be written once (a sidecar, added in a later phase)
+``{name, description, input_schema}``, plus an optional ``strict: True`` when (and only when) the
+source tool declared one (:func:`_with_strict`). :func:`fingerprint_tools` then content-addresses
+an already-normalised list, so a toolset can be written once (a sidecar, added in a later phase)
 and referenced by every ``model_call`` that used it, instead of inlining tens of KB of schema
 into every capture.
 
@@ -14,7 +15,9 @@ Tool definitions are config, not payload -- the same class as ``generation_confi
 (``evalshift.capture.generation``) -- and are never passed through the redactor. Unlike
 ``generation_config``, toolsets are **not** allow-listed: an ``input_schema`` is arbitrary user
 JSON needed in full to dispatch, so normalisation here only recognises or rejects *shapes*, never
-prunes keys *within* a schema.
+prunes keys *within* a schema. The function *envelope* around the schema is a different matter --
+provider-specific keys there are dropped, with exactly one exception, ``strict``, which the CLI
+must resend or the schema constraint the source ran under is silently lost.
 
 Gemini support is duck-typed via ``getattr`` only -- this module, like the rest of the SDK, never
 imports ``google.genai`` (D-deps).
@@ -122,6 +125,32 @@ def _coerce_schema(value: Any) -> Any:
     return dumped if isinstance(dumped, dict) else {}
 
 
+def _with_strict(tool: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
+    """Carry a truthy ``strict`` flag from the source tool onto the canonical one, in place.
+
+    ``strict`` is the one key outside ``{name, description, input_schema}`` that survives
+    normalisation, because it is not decoration: it changes what the *provider* enforces. OpenAI's
+    ``strict: true`` (structured outputs for function calling) makes the API guarantee the
+    arguments validate against ``parameters``; Anthropic's top-level ``strict`` is the same
+    promise. A replay that re-sends the schema without the flag runs the target under a weaker
+    constraint than the source ever did, and every argument-drift number measured that way
+    compares two different regimes -- silently.
+
+    Present **only when truthy**, never as ``"strict": false``. Absent and explicitly-false are
+    the same statement ("no extra constraint"), and collapsing them keeps the canonical dict --
+    and therefore every fingerprint written before this key existed -- byte-for-byte identical
+    (``THREE_TOOL_FINGERPRINT`` / ``EMPTY_TOOLSET_FINGERPRINT`` are pinned on both sides of the
+    SDK/CLI boundary). The recorded value is the canonical ``True``, not the caller's own truthy
+    value, so ``strict: 1`` and ``strict: true`` fingerprint alike.
+
+    Gemini has no equivalent on ``FunctionDeclaration``, so ``_normalize_gemini_tool`` never calls
+    this.
+    """
+    if source.get("strict"):
+        tool["strict"] = True
+    return tool
+
+
 def _normalize_dict(item: dict[str, Any]) -> list[dict[str, Any]] | None:
     """Normalise one Anthropic- or OpenAI-shaped tool dict. ``None`` if neither shape matches."""
     function = item.get("function")
@@ -130,20 +159,26 @@ def _normalize_dict(item: dict[str, Any]) -> list[dict[str, Any]] | None:
         if not isinstance(name, str) or not name:
             return None
         return [
-            {
-                "name": name,
-                "description": function.get("description") or "",
-                "input_schema": _coerce_schema(function.get("parameters")),
-            }
+            _with_strict(
+                {
+                    "name": name,
+                    "description": function.get("description") or "",
+                    "input_schema": _coerce_schema(function.get("parameters")),
+                },
+                function,
+            )
         ]
     name = item.get("name")
     if isinstance(name, str) and name:
         return [
-            {
-                "name": name,
-                "description": item.get("description") or "",
-                "input_schema": _coerce_schema(item.get("input_schema")),
-            }
+            _with_strict(
+                {
+                    "name": name,
+                    "description": item.get("description") or "",
+                    "input_schema": _coerce_schema(item.get("input_schema")),
+                },
+                item,
+            )
         ]
     return None
 
@@ -187,7 +222,8 @@ def _normalize_one(item: Any) -> list[dict[str, Any]] | None:
 
 
 def normalize_tools(raw: Any) -> list[dict[str, Any]] | None:
-    """Normalise a user-supplied toolset to a list of ``{name, description, input_schema}``.
+    """Normalise a user-supplied toolset to a list of ``{name, description, input_schema}``
+    dicts, each optionally carrying ``strict: True`` (:func:`_with_strict`).
 
     Accepts the shapes callers actually hold:
 
@@ -235,7 +271,8 @@ def fingerprint_tools(normalized: list[dict[str, Any]]) -> str:
     Reuses ``evalshift-server/BUNDLE_SPEC.md``'s Hashing section verbatim, so one hashing rule
     holds product-wide (``evalshift-cli`` ports the identical steps):
 
-    1. (done by the caller) normalise each tool to ``{name, description, input_schema}``.
+    1. (done by the caller) normalise each tool to ``{name, description, input_schema}``,
+       plus ``strict: True`` where the source tool declared it (:func:`_with_strict`).
     2. Sort the tool list by ``name``.
     3. ``json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)``.
     4. SHA-256 the UTF-8 bytes, hex-encode, prefix ``sha256:``.
@@ -245,7 +282,8 @@ def fingerprint_tools(normalized: list[dict[str, Any]]) -> str:
     toolsets captured in a different call order would otherwise fingerprint differently.
 
     Args:
-        normalized: A list of ``{name, description, input_schema}`` dicts, e.g. the output of
+        normalized: A list of ``{name, description, input_schema}`` dicts (each optionally
+            carrying ``strict``), e.g. the output of
             :func:`normalize_tools` (never ``None`` -- callers check that first; this function's
             precondition is that normalisation already happened).
 

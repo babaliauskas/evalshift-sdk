@@ -1,11 +1,13 @@
 """Unit tests for the schema-versioning + migration framework (dict layer).
 
-This SDK currently ships **no built-in migration**: schema 2.0.0 added ``toolset_ref`` /
-``tools_offered`` to ``model_call`` and deliberately does not bridge 1.x captures to it (a
-migration would have to invent a ``tools_offered`` value no legacy capture ever recorded — see
-:class:`~evalshift.trace.migrate.ObsoleteSchemaVersionError`). The registry starts empty;
-chain-behaviour tests register *synthetic* migrations per-test via ``register_migration``, on
-fabricated version ranges, cleared by the autouse fixture. No pydantic here — that lives in
+This SDK ships exactly **one built-in migration**: the identity step 2.0.0 -> 2.1.0, which schema
+2.1.0's additive ``requested_tool_calls`` field needs and nothing more. Nothing bridges the 1.x
+major: schema 2.0.0 added ``toolset_ref`` / ``tools_offered`` to ``model_call`` and deliberately
+does not bridge 1.x captures to it (a migration would have to invent a ``tools_offered`` value no
+legacy capture ever recorded — see
+:class:`~evalshift.trace.migrate.ObsoleteSchemaVersionError`). Chain-behaviour tests register
+*synthetic* migrations per-test via ``register_migration``, on fabricated version ranges, cleared
+by the autouse fixture. No pydantic here — that lives in
 ``tests/conformance/test_migrate_parity.py``.
 """
 
@@ -86,7 +88,7 @@ def test_schema_version_parse_rejects_malformed(raw: str) -> None:
 
 
 def test_current_schema_version_matches_constant() -> None:
-    assert str(CURRENT_SCHEMA_VERSION) == "2.0.0"
+    assert str(CURRENT_SCHEMA_VERSION) == "2.1.0"
 
 
 # --- detect_version ---------------------------------------------------------------------------
@@ -127,10 +129,22 @@ def test_detect_version_non_dict_raises() -> None:
 # --- registry ---------------------------------------------------------------------------------
 
 
-def test_registry_starts_empty() -> None:
-    """No built-in migration ships today -- see the module docstring and
-    :class:`~evalshift.trace.migrate.ObsoleteSchemaVersionError`."""
-    assert registered_migrations() == ()
+def test_registry_ships_exactly_the_builtin_2_0_0_identity_edge() -> None:
+    """The only built-in edge is the 2.0.0 -> 2.1.0 identity step (``requested_tool_calls`` is
+    additive, so absent-means-None is the honest value). Nothing bridges the 1.x major -- see the
+    module docstring and :class:`~evalshift.trace.migrate.ObsoleteSchemaVersionError`."""
+    [builtin] = registered_migrations()
+    assert str(builtin.from_version) == "2.0.0"
+    assert str(builtin.to_version) == "2.1.0"
+
+
+def test_builtin_2_0_0_step_is_an_identity_migration() -> None:
+    """A 2.0.0 envelope upgrades to current unchanged apart from its re-stamped version:
+    ``requested_tool_calls`` stays absent rather than being invented as ``[]``."""
+    env = _envelope("2.0.0")
+    result = upgrade_envelope_dict(env)
+    assert result["schema_version"] == str(CURRENT_SCHEMA_VERSION)
+    assert result == dict(env, schema_version=str(CURRENT_SCHEMA_VERSION))
 
 
 def test_register_duplicate_from_version_raises() -> None:
@@ -144,11 +158,12 @@ def test_register_backward_step_raises() -> None:
         register_migration("0.9.0", "0.8.0", lambda env: env)
 
 
-def test_reset_migrations_clears_all_registered_migrations() -> None:
+def test_reset_migrations_clears_test_registered_migrations_but_keeps_builtins() -> None:
+    builtins = registered_migrations()
     register_migration("0.8.0", "0.9.0", lambda env: env)
-    assert len(registered_migrations()) == 1
+    assert len(registered_migrations()) == len(builtins) + 1
     reset_migrations()
-    assert registered_migrations() == ()
+    assert registered_migrations() == builtins
 
 
 # --- upgrade_envelope_dict --------------------------------------------------------------------
@@ -294,7 +309,9 @@ def test_partial_bridge_that_does_not_reach_target_still_refuses_as_obsolete() -
 def test_registering_a_full_bridge_across_majors_is_still_honored() -> None:
     """The refusal only fires when no registered chain reaches the target -- a maintainer who
     deliberately registers a migration across the major boundary (a future MAJOR bump's normal
-    process, per docs/SCHEMA.md) is still honored, not overridden by the refusal gate."""
+    process, per docs/SCHEMA.md) is still honored, not overridden by the refusal gate. The
+    hand-registered 1.1.0 -> 2.0.0 edge hands off to the built-in 2.0.0 -> 2.1.0 step, so the
+    chain reaches the current version."""
     register_migration("1.1.0", "2.0.0", lambda env: dict(env, schema_version="2.0.0"))
     result = upgrade_envelope_dict(_envelope("1.1.0"))
-    assert result["schema_version"] == "2.0.0"
+    assert result["schema_version"] == str(CURRENT_SCHEMA_VERSION)

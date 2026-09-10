@@ -36,10 +36,19 @@ Optional LangChain integration (`EvalShiftCallbackHandler`):
 pip install "evalshift-sdk[langchain]"   # adds langchain-core>=0.2
 ```
 
-The adapter module is import-guarded, so the SDK stays dependency-free at runtime unless you opt in.
+Optional provider client wrappers (`wrap_openai` / `wrap_anthropic` / `wrap_genai`):
 
-> **Co-install note:** the SDK (import name `evalshift`) and the EvalShift CLI share the same
-> top-level import name. Keep them in separate virtual environments.
+```bash
+pip install "evalshift-sdk[openai]"        # openai>=1.40
+pip install "evalshift-sdk[anthropic]"     # anthropic>=0.40
+pip install "evalshift-sdk[google-genai]"  # google-genai>=1.0
+```
+
+Every adapter module is import-guarded, so the SDK stays dependency-free at runtime unless you opt in.
+
+> **Co-install note:** the EvalShift CLI (PyPI `evalshift`, import package `evalshift_cli`)
+> depends on this SDK, so both live in one environment and `pip install evalshift` brings the
+> SDK with it. Production agents that only record captures install `evalshift-sdk` alone.
 
 ## Usage
 
@@ -48,6 +57,15 @@ from evalshift import capture
 
 @capture.agent(suite="support_agent", redact=True, tools=[])   # no-op unless EVALSHIFT_CAPTURE=1
 def handle_ticket(query): ...
+```
+
+Already calling a provider SDK directly? Wrap the client once and every call inside the agent records itself — model, tools offered, tool calls requested, usage, latency:
+
+```python
+from openai import OpenAI
+from evalshift.adapters.openai import wrap_openai      # also: wrap_anthropic, wrap_genai
+
+client = wrap_openai(OpenAI())                          # OpenAI(base_url=...) covers Ollama, vLLM, Groq, ...
 ```
 
 > Full guide: [DOCS.md](DOCS.md) · dense LLM reference: <https://www.evalshift.dev/sdk-llms-full.txt> ·
