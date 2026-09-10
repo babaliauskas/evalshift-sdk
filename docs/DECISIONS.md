@@ -36,16 +36,22 @@ CLI default policy is **halt-and-flag** (a CLI concern). The SDK schema MUST sto
 `tool_result` as a **fixture keyed by `call_id` + input hash** so CLI replay can look it up —
 capture doubles as a tool-result fixture. *Implemented in Phase 1 serialize.*
 
-**Status (2026-09-08) — the fixture table is written; CLI consumption is pending.** The SDK half
-is done: every `tool_result` event carries its `call_id`, its `result`, and a
-`metadata["evalshift"]["input_hash"]`, and `build_fixture_table` (`trace/serialize.py`) derives the
-`(call_id, input_hash) -> result` lookup from them. No CLI code reads it —
-`grep -rn fixture_table evalshift-cli/src` is empty — so the halt-and-flag policy above states an
-intent, not shipped behaviour: `evalshift run` makes one model call per example and scores the
-first tool-emitting round only (which is why `evalshift capture promote` / `capture sync` default
-to `--rounds first`). Teacher-forced multi-round replay, and the halt-and-flag-vs-substitute
-decision that goes with it, are Phase 2 of
-`evalshift-cli/docs/superpowers/plans/2026-09-08-external-review-response.md`.
+**Status (2026-09-09) — recorded results are replayed; the halt-and-flag policy turned out to be
+unnecessary.** The SDK half is unchanged: every `tool_result` event carries its `call_id`, its
+`result`, and a `metadata["evalshift"]["input_hash"]`, and `build_fixture_table`
+(`trace/serialize.py`) derives the `(call_id, input_hash) -> result` lookup from them. The CLI
+consumes the *events*, not that table (`grep -rn fixture_table evalshift-cli/src` is still empty):
+`evalshift capture promote` / `capture sync --rounds all` pair each round's tool calls with that
+round's `tool_result` events by `call_id`, then by name within the round, and carry the results on
+the promoted case as `tool_result_fixtures`; `evalshift run` then replays the example
+**teacher-forced** — round *k* sees the prompt plus the *recorded* rounds `1..k-1` as assistant tool
+calls and tool results, never the candidate's own calls — for every covered round plus the answer
+round after it, and the tool evaluators score each round against its own ground truth. Because the
+candidate's calls are never executed or fed back, "candidate called a tool with no fixture" cannot
+arise, so no halt-and-flag-vs-substitute decision was needed; self-conditioned replay (which would
+need it, plus a name+argument lookup on the `input_hash` table) is deferred. The default stays
+`--rounds first` (single-shot, round 1 only) for cost. Design:
+`evalshift-cli/docs/superpowers/specs/2026-09-09-teacher-forced-replay-design.md`.
 
 ### 2. Nondeterminism (N-sample)
 A CLI/run concern. The SDK records one observed run; no schema change.

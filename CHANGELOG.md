@@ -82,6 +82,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `None`) rather than being fabricated as `[]`. 1.x captures are still refused
   with `ObsoleteSchemaVersionError`, unchanged.
 
+- Docs: `docs/DECISIONS.md` §1 and `examples/support_agent/README.md` no
+  longer describe recorded tool results as captured-but-unreplayed. The CLI
+  now carries them as `tool_result_fixtures` (`capture sync --rounds all`) and
+  replays multi-round examples teacher-forced, so the halt-and-flag policy
+  drafted there was never needed; the `input_hash`-keyed `build_fixture_table`
+  remains unread by the CLI.
 - Packaging: the EvalShift CLI (`evalshift` 0.14.0+) now depends on this
   package and imports as `evalshift_cli`, so the two install into one
   environment and `pip install evalshift` brings the SDK with it. The

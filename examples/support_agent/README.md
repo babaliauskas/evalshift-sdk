@@ -86,18 +86,19 @@ Using it outside the test suite is possible but unsupported: it lives in the CLI
 the worked example, including the JSONL fixture format. Once the run directory exists, the
 downstream `evalshift evaluate` / `analyze` / `report` commands work normally.
 
-## Known gap: tool-result fixtures are captured but not replayed
+## Multi-round agents: recorded tool results as replay fixtures
 
 The SDK records every tool's *result* on its `tool_result` event together with the tool's
-`call_id` and a `metadata.evalshift.input_hash`, and `build_fixture_table`
-(`src/evalshift/trace/serialize.py`) derives the `(call_id, input_hash) -> result` lookup that
-`docs/DECISIONS.md` §1 promises to CLI replay.
-
-**Nothing in the CLI reads it yet.** `evalshift run` makes one model call per example and scores
-the first tool-emitting round only, so a multi-round agent's later rounds are captured but never
-replayed — which is also why `capture sync` defaults to `--rounds first`. Teacher-forced
-multi-round replay is Phase 2 of
-`evalshift-cli/docs/superpowers/plans/2026-09-08-external-review-response.md`.
+`call_id`. By default `capture sync` promotes **round 1 only** (`--rounds first`) and `evalshift
+run` makes one model call per example, so a multi-round agent's later rounds are captured but not
+replayed. `capture sync --rounds all` carries the recorded results on each case as
+`tool_result_fixtures`, and `run` then replays the example **teacher-forced**: round *k* is given
+the prompt plus the *recorded* rounds `1..k-1` (assistant tool calls and their results — never the
+candidate's own calls), and every round is scored against its own ground truth. This demo's agent
+makes a single model call per ticket, so the two settings coincide here; see
+`evalshift-cli/docs/agents.md` ("Agent rounds") for the full semantics. The `input_hash`-keyed
+`build_fixture_table` (`src/evalshift/trace/serialize.py`) is still not read by the CLI — pairing
+is by `call_id`, then by name within a round.
 
 ## Files
 - `agent.py` — SDK-instrumented deterministic agent (`record_model_call` + `@capture.tool`).
