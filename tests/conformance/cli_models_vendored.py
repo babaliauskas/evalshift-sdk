@@ -1,7 +1,7 @@
 # FROZEN MIRROR — do not edit by hand except to re-sync with the CLI.
 # Source: evalshift-cli/src/evalshift_cli/traces/models.py (AgentTrace + TraceEvent union) and
 #         evalshift-cli/src/evalshift_cli/captures/models.py (CaptureEnvelope).
-# License: the CLI source is AGPL-3.0-or-later; this mirror is distributed here under this
+# License: the CLI source is Apache-2.0; this mirror is distributed here under this
 #          repository's MIT license by Lukas Babaliauskas, the copyright holder of both
 #          codebases. Re-syncs must only pull from CLI code with the same sole authorship.
 # Purpose: parity target for the SDK's emitted JSON. The SDK must produce JSON that validates
