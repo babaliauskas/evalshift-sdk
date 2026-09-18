@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Docs: `examples/support_agent/README.md` calls the CLI's one-command
+  pipeline `evalshift compare`, its new name upstream. The former `all`
+  stays registered as a permanent hidden alias, so the old spelling in any
+  existing script keeps working.
+
 ## [0.4.0] - 2026-09-10
 
 ### Added
