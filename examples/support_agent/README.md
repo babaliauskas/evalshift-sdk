@@ -56,7 +56,7 @@ evalshift push <run_id> \
   --host https://api.evalshift.dev --token <es_token> --project <org>/sdk-demo
 ```
 
-`evalshift all --suite-name support_demo --to <candidate>` collapses steps 3–4 into one command.
+`evalshift compare --suite-name support_demo --to <candidate>` collapses steps 3–4 into one command.
 
 ## What this actually measures
 
