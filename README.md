@@ -89,3 +89,9 @@ change required (precedence: an explicit `configure(...)` call > env var > built
 A malformed value falls back to the default (capture never crashes). To restore fully unbounded
 capture: `EVALSHIFT_MAX_CAPTURES=0 EVALSHIFT_DEDUP=off`. The same knobs are available in code via
 `configure(max_captures=..., dedup=..., capture_ttl=..., sample_rate=...)`.
+
+## Further reading
+
+- [Build a golden eval suite from production traffic](https://www.evalshift.dev/blog/build-a-golden-suite-from-production-traffic) — the capture → promote loop this SDK feeds.
+- [Evaluating agent tool calls: what text evals can't see](https://www.evalshift.dev/blog/evaluating-agent-tool-calls) — why the captured tool calls matter more than the output text.
+- [Capture SDK docs](https://www.evalshift.dev/docs/sdk)
