@@ -65,7 +65,7 @@ Already calling a provider SDK directly? Wrap the client once and every call ins
 from openai import OpenAI
 from evalshift.adapters.openai import wrap_openai      # also: wrap_anthropic, wrap_genai
 
-client = wrap_openai(OpenAI())                          # OpenAI(base_url=...) covers Ollama, vLLM, Groq, ...
+client = wrap_openai(OpenAI())                          # OpenAI(base_url=...) covers DeepSeek, Ollama, vLLM, Groq, ...
 ```
 
 > Full guide: [DOCS.md](DOCS.md) · dense LLM reference: <https://www.evalshift.dev/sdk-llms-full.txt> ·

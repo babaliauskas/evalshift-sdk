@@ -304,8 +304,8 @@ evalshift.adapters.genai.wrap_genai(client: C) -> C              # [google-genai
   Fail-open: the real call is never guarded (provider errors propagate; a failed request records
   nothing); a wrapper fault = "not recorded". Proxy is NOT an isinstance of the client class;
   evalshift.adapters._wrap.unwrap(proxy) returns the real client. Modules import-guard their SDK
-  (import without the extra does not fail). OpenAI-compatible servers (Ollama, vLLM, llama.cpp,
-  LM Studio, TGI, Together, Groq, Fireworks, OpenRouter) need no wrapper of their own:
+  (import without the extra does not fail). OpenAI-compatible servers (DeepSeek, Ollama, vLLM,
+  llama.cpp, LM Studio, TGI, Together, Groq, Fireworks, OpenRouter) need no wrapper of their own:
   wrap_openai(OpenAI(base_url=...)); a server omitting usage records 0 tokens. Do NOT also call
   record_model_call for the same request (double record). Pairs with @capture.tool as intended.
 
@@ -498,7 +498,7 @@ chain.invoke({"question": q}, config={"callbacks": [handler]})
 #     evalshift.adapters.anthropic.wrap_anthropic / evalshift.adapters.genai.wrap_genai)
 from openai import OpenAI
 from evalshift.adapters.openai import wrap_openai
-client = wrap_openai(OpenAI())          # OpenAI(base_url=...) for Ollama / vLLM / Groq ...
+client = wrap_openai(OpenAI())          # OpenAI(base_url=...) for DeepSeek / Ollama / vLLM / Groq ...
 
 @capture.agent(suite="support", redact=True, tools=[])
 def answer(q: str) -> str:              # each create() inside records one model_call
