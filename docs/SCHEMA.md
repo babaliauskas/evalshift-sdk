@@ -72,7 +72,7 @@ with capture.agent_session(
     turn_index=2,
     parent_capture_id="cap_prev_turn_id",
 ):
-    record_model_call(model_id="claude-opus-4-8", input=messages, output=reply)
+    record_model_call(model_id="claude-opus-4-8", tools=[], input=messages, output=reply)
 ```
 
 The `@capture.agent(...)` decorator also accepts the same three keyword arguments, but they are
@@ -301,8 +301,9 @@ across the major boundary is honored, not overridden.
 
 ## Guarantees & limits
 
-- **Raise, don't fail open.** Reading is read-side tooling (the CLI consumes it in Phase 9), not
-  the capture hot path. It raises typed `MigrationError` subclasses (`UnreadableCaptureError`,
+- **Raise, don't fail open.** Reading is read-side tooling for tests and your own scripts (the CLI
+  has its own reader; disk is the only SDK↔CLI interface), not the capture hot path. It raises
+  typed `MigrationError` subclasses (`UnreadableCaptureError`,
   `MissingSchemaVersionError`, `InvalidSchemaVersionError`, `UnsupportedSchemaVersionError`,
   `NoMigrationPathError`, `ObsoleteSchemaVersionError`, `UnknownEventTypeError`) — contrast the
   capture path's fail-open `safety.py` boundary, which must never break the host agent.

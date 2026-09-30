@@ -10,7 +10,7 @@ those captures from disk; the SDK and CLI never call each other.
 - **Runtime deps:** none (stdlib-only)
 - **Python:** >= 3.10
 - **Capture is off by default** — set `EVALSHIFT_CAPTURE=1` to record.
-- **License:** [MIT](LICENSE)
+- **License:** [MIT](https://github.com/babaliauskas/evalshift-sdk/blob/main/LICENSE)
 
 ## For AI coding agents
 
@@ -19,7 +19,7 @@ working on:
 
 - EvalShift CLI: <https://www.evalshift.dev/cli-llms-full.txt>
 - EvalShift SDK: <https://www.evalshift.dev/sdk-llms-full.txt>
-  (source of truth: [llms-full.txt](llms-full.txt) in this repo)
+  (source of truth: [llms-full.txt](https://github.com/babaliauskas/evalshift-sdk/blob/main/llms-full.txt) in this repo)
 - EvalShift GitHub Action (CI): <https://www.evalshift.dev/ci-llms-full.txt>
 
 ## Install
@@ -68,8 +68,8 @@ from evalshift.adapters.openai import wrap_openai      # also: wrap_anthropic, w
 client = wrap_openai(OpenAI())                          # OpenAI(base_url=...) covers DeepSeek, Ollama, vLLM, Groq, ...
 ```
 
-> Full guide: [DOCS.md](DOCS.md) · dense LLM reference: <https://www.evalshift.dev/sdk-llms-full.txt> ·
-> locked design decisions: [docs/DECISIONS.md](docs/DECISIONS.md)
+> Full guide: [DOCS.md](https://github.com/babaliauskas/evalshift-sdk/blob/main/DOCS.md) · dense LLM reference: <https://www.evalshift.dev/sdk-llms-full.txt> ·
+> locked design decisions: [docs/DECISIONS.md](https://github.com/babaliauskas/evalshift-sdk/blob/main/docs/DECISIONS.md)
 
 ## Keeping `captures/` bounded
 
@@ -87,7 +87,10 @@ change required (precedence: an explicit `configure(...)` call > env var > built
 | `EVALSHIFT_DIR` | `.evalshift` | Capture root directory. |
 
 A malformed value falls back to the default (capture never crashes). To restore fully unbounded
-capture: `EVALSHIFT_MAX_CAPTURES=0 EVALSHIFT_DEDUP=off`. The same knobs are available in code via
+capture: `EVALSHIFT_MAX_CAPTURES=0 EVALSHIFT_DEDUP=off`. Disable dedup with `off` (or `0`/`none`);
+`false`/`no` are not recognised and leave dedup on. `EVALSHIFT_SAMPLE_RATE=0` means sampling off
+(capture every run) — it is not the same as `configure(sample_rate=0.0)`, which captures nothing.
+The same knobs are available in code via
 `configure(max_captures=..., dedup=..., capture_ttl=..., sample_rate=...)`.
 
 ## Further reading
