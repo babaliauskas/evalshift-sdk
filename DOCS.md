@@ -2,7 +2,7 @@
 
 The EvalShift SDK is an **in-process capture SDK** for AI agents. You install it inside your agent process, wrap the boundaries you care about — the agent invocation, its model calls, its tool calls — and the SDK records each run as a structured trace and writes it as a JSON capture file to local disk.
 
-- **Distribution name:** `evalshift-sdk` · **import name:** `evalshift` · **version:** 0.3.0
+- **Distribution name:** `evalshift-sdk` · **import name:** `evalshift` · **version:** 0.4.0
 - **Python:** >= 3.10 · **runtime dependencies:** none (stdlib only) · **fully typed** (`py.typed` ships)
 - **License:** [MIT](LICENSE)
 - **No network.** The SDK writes only to the local filesystem (or an in-memory buffer). Captures are consumed by the separate [evalshift CLI](https://github.com/babaliauskas/evalshift-cli); disk is the only interface between the two.
@@ -107,7 +107,7 @@ One capture file appears at `.evalshift/captures/support_demo/cap_<hex>.json` (r
   "schema_version": "2.1.0",
   "capture_id": "cap_203ce5041fe042298d0e3b5b9910e178",
   "suite": "support_demo",
-  "input_hash": "3829825837ffeb3415bd0e448838ab18a928378b87175fba1cb053fda13b4100",
+  "input_hash": "7af43bb32e9f7fc4cbb43d99126edba4c1f4e575d20997f297ce9f02f8395c4b",
   "code_version": "",
   "created_at": "2026-07-20T22:22:31.082267+00:00",
   "trace": {
@@ -227,7 +227,7 @@ Full schema-versioning and migration policy: [docs/SCHEMA.md](docs/SCHEMA.md).
 
 ## Instrumenting your agent
 
-There are three ways to wrap agent calls. They share the same pipeline and configuration; pick per call site.
+There are four ways to wrap agent calls. They share the same pipeline and configuration; pick per call site.
 
 1. **Decorators** — `@capture.agent` + `@capture.tool` + `record_model_call`: least intrusive, best for a stable agent entry point.
 2. **Context managers** — `capture.agent_session` / `agent_session_async`: for inline instrumentation and multi-turn conversations where per-call values change.
@@ -556,7 +556,11 @@ configure(
 | `EVALSHIFT_DEDUP` | `on` | Collapse captures with identical `(suite, input_hash)` within one process. | At config construction |
 | `EVALSHIFT_SAMPLE_RATE` | off (capture all) | Capture only this fraction of runs (0.0–1.0), decided once per agent invocation. | At config construction |
 
-- For the numeric knobs, `0`, `none`, `unlimited`, or `off` means "no cap / disabled".
+- For the numeric knobs, `0`, `none`, `unlimited`, or `off` means "no cap / disabled". Disable
+  `EVALSHIFT_DEDUP` with `off` (or `0`/`none`); `false`/`no` are not recognised and leave dedup on.
+- `EVALSHIFT_SAMPLE_RATE=0` means sampling off (capture every run), whereas
+  `configure(sample_rate=0.0)` captures nothing; to capture nothing via the env var, unset
+  `EVALSHIFT_CAPTURE` instead.
 - **Precedence:** explicit `configure(...)` > environment variable > built-in default.
 - Malformed values fail open to the default — a bad env var can never crash your agent.
 
@@ -653,7 +657,7 @@ configure(sink=QueueSink())
 
 Whenever any hygiene knob is active (dedup / max_captures / capture_ttl — and dedup + max_captures are on by default), the active sink is transparently wrapped in an internal `HygieneSink` that applies dedup before the base write and GC after it. Dedup works with any sink (including `MemorySink`); GC runs only when the base write returns a real `Path`, so it is effectively a `FileSink`-only concern. With all three knobs disabled, your sink is used bare.
 
-A dedup-suppressed write returns `None` — from the caller's view indistinguishable from a degraded write; both log at `debug` level only.
+A dedup-suppressed write returns `None` silently (no log line); a degraded `OSError` write logs one `debug` line.
 
 ---
 
@@ -798,7 +802,7 @@ Behaviour, shared by all three (design: [docs/DECISIONS.md](docs/DECISIONS.md) D
 
 ## Reading captures programmatically
 
-The read side parses a capture file and **upgrades it on read** to the current schema version, so old captures stay readable under newer SDKs.
+The read side parses a capture file and **upgrades it on read** to the current schema version, so older captures of the **same major** stay readable under newer SDKs.
 
 ```python
 from pathlib import Path
@@ -822,18 +826,19 @@ Unlike the capture path, the read path **raises** — it does not fail open:
 | `InvalidSchemaVersionError` | `schema_version` is not a `MAJOR.MINOR.PATCH` string |
 | `UnsupportedSchemaVersionError` | The capture's major version is newer than this SDK supports |
 | `NoMigrationPathError` | No registered migration chain reaches the target version |
+| `ObsoleteSchemaVersionError` | The capture's major version is older than this SDK supports and no registered migration bridges it (every 1.x capture). Re-run the agent to re-capture. |
 | `UnknownEventTypeError` | An event's `type` is not a known discriminator |
 
 Catch broadly with `except MigrationError`.
 
-Forward compatibility: an **older** capture migrates up the registered chain; the **same** version reads as-is; a **newer minor/patch** (same major) reads best-effort with a warning, unknown fields dropped; a **newer major** is refused with `UnsupportedSchemaVersionError`.
+Forward compatibility: an **older, same-major** capture migrates up the registered chain (e.g. 2.0.0 → 2.1.0); an **older major** with no registered bridge (every 1.x capture) is refused with `ObsoleteSchemaVersionError`; the **same** version reads as-is; a **newer minor/patch** (same major) reads best-effort with a warning, unknown fields dropped; a **newer major** is refused with `UnsupportedSchemaVersionError`.
 
 Extenders can plug in a future upgrade step:
 
 ```python
 from evalshift import register_migration
 
-register_migration("1.1.0", "1.2.0", my_upgrade_fn, description="add foo field")
+register_migration("2.1.0", "2.2.0", my_upgrade_fn, description="add foo field")
 ```
 
 `SCHEMA_VERSION` (currently `"2.1.0"`) is the version this SDK writes. Policy details: [docs/SCHEMA.md](docs/SCHEMA.md).
@@ -842,9 +847,11 @@ register_migration("1.1.0", "1.2.0", my_upgrade_fn, description="add foo field")
 
 ## API reference
 
-Everything below except `reset_config` and `EvalShiftCallbackHandler` imports from the top level: `from evalshift import ...`.
+Everything below except `reset_config` (`evalshift.config`), the `Sink` protocol (`evalshift.sinks`), `CaptureEnvelope` (`evalshift.trace`), `EvalShiftCallbackHandler` and the `wrap_*` wrappers (import lines shown) imports from the top level: `from evalshift import ...`.
 
 Top-level exports: `capture`, `record_model_call`, `configure`, `Redactor`, `RedactSetting`, `default_redactor`, `FileSink`, `MemorySink`, `load_capture`, `load_envelope`, `register_migration`, `MigrationError`, `SCHEMA_VERSION`, `__version__`.
+
+`evalshift.trace` / `evalshift.capture` also export lower-level building blocks used by the SDK's own tests; not a stable public API.
 
 ### `capture.agent`
 
@@ -896,7 +903,7 @@ rec.set_generation_config(config: dict[str, Any]) -> None
 rec.set_requested_tool_calls(calls: Any) -> None
 ```
 
-Streaming model-call recorder. Records exactly one `model_call` event on exit with the joined `add_text` chunks as output. `latency_ms` auto-derives from the block duration unless set via `set_usage`. Inert without an active session — no toolset resolution or sidecar write happens for a no-op either; recorder faults never break the stream loop. `tools` is required, with the same contract as [`record_model_call`](#record_model_call)'s. `set_requested_tool_calls` records what the model asked to call, also with the same contract as `record_model_call`'s argument — usable before or during the block (a streamed tool call is only complete once its argument deltas have arrived), last write wins. `generation_config` is allow-listed and JSON-coerced exactly as in `record_model_call`; use `set_generation_config` (last write wins, filtered on the same seven keys) when the effective settings only become known mid-stream.
+Streaming model-call recorder. Records exactly one `model_call` event on exit with the joined `add_text` chunks as output. `latency_ms` auto-derives from the block duration unless set via `set_usage`. Inert without an active session — no toolset resolution or sidecar write happens for a no-op either; recorder faults never break the stream loop. `tools` is required, with the same contract as [`record_model_call`](#record_model_call)'s. `set_requested_tool_calls` records what the model asked to call, also with the same contract as `record_model_call`'s argument — usable before or during the block (a streamed tool call is only complete once its argument deltas have arrived), last write wins. `generation_config` is allow-listed and JSON-coerced exactly as in `record_model_call`; use `set_generation_config` (last write wins, filtered on the same ten keys) when the effective settings only become known mid-stream.
 
 ### `capture.tool`
 
@@ -936,7 +943,7 @@ Records an already-complete model call into the active session. No-op outside on
 - `tools=[]` to assert this call genuinely had no tools — a real, first-class value, not a default;
 - `tools=None` to defer to the enclosing session's own `tools=` (`capture.agent` / `agent_session` / `agent_session_async`) instead of asserting one for this call. A call's own non-`None` value always wins over the session's, even across repeated calls in one session that each choose differently — the reason this is per-call at all is that a real agent can switch toolsets mid-run.
 
-A value matching no recognised shape — the call's own, or (when `tools=None`) the session's — normalises to `None`: neither field is stamped (logged at `debug`), leaving the capture structurally invalid for that event rather than guessing. Unlike `generation_config`, toolsets are **not** allow-listed — an `input_schema` is arbitrary user JSON needed in full to dispatch, so normalisation only recognises or rejects tool *shapes*, never prunes keys within a schema. The canonical shape a toolset is normalised *to* is `{name, description, input_schema}` plus one optional key: `strict: true`, carried through from OpenAI's `function.strict` or Anthropic's top-level `strict` when it is truthy and omitted entirely otherwise (so pre-existing fingerprints are unchanged). It is the one function-envelope key kept, because a replay that drops it runs the target under a weaker schema constraint than the source did. Like `generation_config`, toolsets are config, not payload, and are never redacted — but by a different mechanism: `generation_config` lives outside `span.data` entirely, while the toolset fields are top-level `span.data` fields kept safe only because `model_call`'s redactable-field list names exactly `input` and `output`. See [docs/DECISIONS.md](docs/DECISIONS.md) D-toolset for the full reasoning.
+A value matching no recognised shape — the call's own, or (when `tools=None`) the session's — normalises to `None`: neither field is stamped (logged at `debug`), leaving the capture structurally invalid for that event rather than guessing. Unlike `generation_config`, toolsets are **not** allow-listed — an `input_schema` is arbitrary user JSON needed in full to dispatch, so normalisation only recognises or rejects tool *shapes*, never prunes keys within a schema. The canonical shape a toolset is normalised *to* is `{name, description, input_schema}` plus one optional key: `strict: true`, carried through from OpenAI's `function.strict` or Anthropic's top-level `strict` when it is truthy and omitted entirely otherwise (so pre-existing fingerprints are unchanged). It is the one function-envelope key kept, because a replay that drops it runs the target under a weaker schema constraint than the source did. Like `generation_config`, toolsets are config, not payload, and are never redacted — but by a different mechanism: `generation_config` lives outside `span.data` entirely, while the toolset fields are top-level `span.data` fields kept safe only because `model_call`'s redactable-field list names its fields one by one (`input`, `output`, `requested_tool_calls`) and neither toolset field is among them. See [docs/DECISIONS.md](docs/DECISIONS.md) D-toolset for the full reasoning.
 
 `requested_tool_calls` (schema 2.1.0, D-requested) records what the **model asked for** in this response — a third fact alongside `tools` (what it was *offered*) and the `tool_call` events (what your app *executed*); see [Offered vs. requested vs. executed](#recording-model-calls) above. Pass a list of `{"name": str, "arguments": dict, "call_id": str | None}` items, typically from `evalshift.capture.requested.extract_requested_tool_calls(response_dict)`. Each item is normalised to exactly those three keys (extra provider keys dropped, `arguments` → `{}`, `call_id` → `None`) because the CLI's `RequestedToolCall` model is `extra="forbid"`. Unlike `tools`, it is **optional**: omitted or `None` records nothing (`null` = "not recorded", distinct from `[]` = "the model requested no tools"). A malformed value — not a list, or a list with no item carrying a usable `name` — is dropped fail-open and logged at `debug`; the event is still recorded. Unlike `tools`, these arguments **are** redacted.
 
@@ -994,6 +1001,9 @@ Recursively masks emails (`[REDACTED_EMAIL]`), `sk-…` keys, `AKIA…` keys, an
 ### `Sink` (protocol)
 
 ```python
+from evalshift.sinks import Sink
+from evalshift.trace import CaptureEnvelope
+
 @runtime_checkable
 class Sink(Protocol):
     def write(self, envelope: CaptureEnvelope) -> Path | None: ...
@@ -1048,11 +1058,11 @@ Registers a single-step, forward-only schema upgrade. `apply` must be pure (`dic
 
 ### `MigrationError`
 
-Base class of the six typed read errors (see [Reading captures](#reading-captures-programmatically)). Subclasses import from `evalshift.trace.migrate`.
+Base class of the seven typed read errors (see [Reading captures](#reading-captures-programmatically)). Subclasses import from `evalshift.trace.migrate`.
 
 ### `SCHEMA_VERSION` / `__version__`
 
-`SCHEMA_VERSION` — the envelope schema version this SDK writes (`"2.1.0"`). `__version__` — the package version (`"0.3.0"`).
+`SCHEMA_VERSION` — the envelope schema version this SDK writes (`"2.1.0"`). `__version__` — the package version (`"0.4.0"`).
 
 ### `EvalShiftCallbackHandler`
 
@@ -1095,7 +1105,7 @@ Work down this checklist:
 6. **Redactor raised** — a raising redactor drops the capture fail-closed.
 7. **Filesystem error** — read-only mount / disk full; the write degrades silently. Use `MemorySink` on read-only filesystems.
 
-Every drop logs one line at `debug` level. Turn on the logger to see which branch fired:
+Drops from `require_model_call`, a raising redactor, or a filesystem error each log one `debug` line. Gate-off, sampling and dedup drops are silent — rule them out with the checklist above. Turn on the logger to see which branch fired:
 
 ```python
 import logging

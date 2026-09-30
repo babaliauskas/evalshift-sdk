@@ -16,6 +16,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docs: DeepSeek is listed among the OpenAI-compatible APIs `wrap_openai`
   captures unchanged, with the exact client construction. Replaying those
   captures needs EvalShift CLI 1.2.0 or later.
+- Docs: corrected a batch of facts a docs-currency audit found stale or
+  wrong across DOCS.md, llms.txt, llms-full.txt, docs/SCHEMA.md and
+  README.md — the documented version string (was still 0.3.0 in two
+  spots), the `generation_config` and redactable-field key counts, the
+  missing `ObsoleteSchemaVersionError` (the read path's seventh
+  `MigrationError` subclass, raised for every pre-2.0 capture, with no
+  registered bridge across a major-version boundary), a `SCHEMA.md`
+  example that omitted the now-required `tools=` and would raise
+  `TypeError`, which log lines a dropped capture actually emits (dedup
+  drops are silent; gate-off/sampling/dedup are never logged), which
+  names import from the top-level `evalshift` package versus
+  `evalshift.sinks` / `evalshift.trace`, the `EVALSHIFT_DEDUP` values
+  that actually disable dedup (`false`/`no` are not recognised and leave
+  it on) and the `EVALSHIFT_SAMPLE_RATE=0` vs. `configure(sample_rate=0.0)`
+  distinction, and the README's PyPI-broken relative links (now absolute
+  GitHub URLs).
 
 ## [0.4.0] - 2026-09-10
 
