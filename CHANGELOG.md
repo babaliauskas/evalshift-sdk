@@ -24,9 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MigrationError` subclass, raised for every pre-2.0 capture, with no
   registered bridge across a major-version boundary), a `SCHEMA.md`
   example that omitted the now-required `tools=` and would raise
-  `TypeError`, which log lines a dropped capture actually emits (dedup
-  drops are silent; gate-off/sampling/dedup are never logged), which
-  names import from the top-level `evalshift` package versus
+  `TypeError`, which log lines a dropped capture actually emits
+  (gate-off, sampling and dedup drops are silent; a `require_model_call`
+  drop, a raising redactor or a filesystem error logs one debug line),
+  which names import from the top-level `evalshift` package versus
   `evalshift.sinks` / `evalshift.trace`, the `EVALSHIFT_DEDUP` values
   that actually disable dedup (`false`/`no` are not recognised and leave
   it on) and the `EVALSHIFT_SAMPLE_RATE=0` vs. `configure(sample_rate=0.0)`
