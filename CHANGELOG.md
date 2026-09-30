@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pipeline `evalshift compare`, its new name upstream. The former `all`
   stays registered as a permanent hidden alias, so the old spelling in any
   existing script keeps working.
+- Docs: DeepSeek is listed among the OpenAI-compatible APIs `wrap_openai`
+  captures unchanged, with the exact client construction. Replaying those
+  captures needs EvalShift CLI 1.2.0 or later.
 
 ## [0.4.0] - 2026-09-10
 
