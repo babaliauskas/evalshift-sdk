@@ -2,7 +2,7 @@
 
 The EvalShift SDK is an **in-process capture SDK** for AI agents. You install it inside your agent process, wrap the boundaries you care about — the agent invocation, its model calls, its tool calls — and the SDK records each run as a structured trace and writes it as a JSON capture file to local disk.
 
-- **Distribution name:** `evalshift-sdk` · **import name:** `evalshift` · **version:** 0.4.0
+- **Distribution name:** `evalshift-sdk` · **import name:** `evalshift` · **version:** 0.4.1
 - **Python:** >= 3.10 · **runtime dependencies:** none (stdlib only) · **fully typed** (`py.typed` ships)
 - **License:** [MIT](LICENSE)
 - **No network.** The SDK writes only to the local filesystem (or an in-memory buffer). Captures are consumed by the separate [evalshift CLI](https://github.com/babaliauskas/evalshift-cli); disk is the only interface between the two.
@@ -1062,7 +1062,7 @@ Base class of the seven typed read errors (see [Reading captures](#reading-captu
 
 ### `SCHEMA_VERSION` / `__version__`
 
-`SCHEMA_VERSION` — the envelope schema version this SDK writes (`"2.1.0"`). `__version__` — the package version (`"0.4.0"`).
+`SCHEMA_VERSION` — the envelope schema version this SDK writes (`"2.1.0"`). `__version__` — the package version (`"0.4.1"`).
 
 ### `EvalShiftCallbackHandler`
 
