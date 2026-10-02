@@ -1,6 +1,6 @@
 # evalshift-sdk
 
-> In-process Python capture SDK for AI agents. Wrap an agent's entry point, tool calls, and model calls; each run is recorded as a structured trace and written as a JSON capture file to `.evalshift/captures/<suite>/cap_<id>.json` on local disk. Capture is off unless the `EVALSHIFT_CAPTURE` env var is truthy. Zero runtime dependencies (stdlib only), Python >= 3.10, no network code. Captures are consumed by the separate [evalshift CLI](https://github.com/babaliauskas/evalshift-cli); disk is the only interface between SDK and CLI.
+> In-process Python capture SDK for AI agents. Wrap an agent's entry point, tool calls, and model calls; each run is recorded as a structured trace and written as a JSON capture file to `.evalshift/captures/<suite>/cap_<id>.json` on local disk. Capture is off unless the `EVALSHIFT_CAPTURE` env var is truthy. Zero runtime dependencies (stdlib only), Python >= 3.10, no network code. Captures are consumed by the separate [evalshift CLI](https://github.com/evalshift/evalshift-cli); disk is the only interface between SDK and CLI.
 
 Key facts:
 

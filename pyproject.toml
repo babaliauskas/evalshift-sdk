@@ -41,9 +41,9 @@ anthropic = ["anthropic>=0.40"]
 google-genai = ["google-genai>=1.0"]
 
 [project.urls]
-Homepage = "https://github.com/babaliauskas/evalshift-sdk"
-Repository = "https://github.com/babaliauskas/evalshift-sdk"
-Issues = "https://github.com/babaliauskas/evalshift-sdk/issues"
+Homepage = "https://github.com/evalshift/evalshift-sdk"
+Repository = "https://github.com/evalshift/evalshift-sdk"
+Issues = "https://github.com/evalshift/evalshift-sdk/issues"
 
 [dependency-groups]
 # Dev/test only. `pydantic` is used by the vendored parity harness (tests/conformance),

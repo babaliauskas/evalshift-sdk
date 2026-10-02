@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The repository moved from the `babaliauskas` GitHub account to the
+  `evalshift` organization: <https://github.com/evalshift/evalshift-sdk>. The
+  PyPI project links and the docs point there; GitHub redirects the old URLs.
+
 ## [0.4.1] - 2026-10-01
 
 ### Changed

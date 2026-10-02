@@ -11,7 +11,7 @@ Purpose: in-process capture SDK for AI agents. Wraps agent invocations, tool cal
 calls; records each run as a span tree; serializes to a JSON capture envelope written to
 <base>/captures/<suite>/cap_<hex>.json on local disk. No network code anywhere in the SDK.
 Captures are consumed by the separate evalshift CLI
-(https://github.com/babaliauskas/evalshift-cli); disk is the only interface between SDK and CLI.
+(https://github.com/evalshift/evalshift-cli); disk is the only interface between SDK and CLI.
 
 Quickstart (minimum working setup):
 1. pip install evalshift-sdk
