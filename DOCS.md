@@ -5,7 +5,7 @@ The EvalShift SDK is an **in-process capture SDK** for AI agents. You install it
 - **Distribution name:** `evalshift-sdk` · **import name:** `evalshift` · **version:** 0.4.1
 - **Python:** >= 3.10 · **runtime dependencies:** none (stdlib only) · **fully typed** (`py.typed` ships)
 - **License:** [MIT](LICENSE)
-- **No network.** The SDK writes only to the local filesystem (or an in-memory buffer). Captures are consumed by the separate [evalshift CLI](https://github.com/babaliauskas/evalshift-cli); disk is the only interface between the two.
+- **No network.** The SDK writes only to the local filesystem (or an in-memory buffer). Captures are consumed by the separate [evalshift CLI](https://github.com/evalshift/evalshift-cli); disk is the only interface between the two.
 - **Off by default.** Nothing is recorded unless the `EVALSHIFT_CAPTURE` environment variable is set to a truthy value. Instrumentation is safe to leave in production code paths permanently.
 
 ---

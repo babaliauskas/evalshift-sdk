@@ -1,6 +1,6 @@
 # evalshift-sdk
 
-In-process capture SDK for [EvalShift](https://github.com/babaliauskas/evalshift-cli).
+In-process capture SDK for [EvalShift](https://github.com/evalshift/evalshift-cli).
 
 Install it inside your agent process to record what the agent does — model calls, tool calls,
 retrievals — and write CLI-valid traces to `.evalshift/captures/`. The `evalshift` CLI reads
@@ -10,7 +10,7 @@ those captures from disk; the SDK and CLI never call each other.
 - **Runtime deps:** none (stdlib-only)
 - **Python:** >= 3.10
 - **Capture is off by default** — set `EVALSHIFT_CAPTURE=1` to record.
-- **License:** [MIT](https://github.com/babaliauskas/evalshift-sdk/blob/main/LICENSE)
+- **License:** [MIT](https://github.com/evalshift/evalshift-sdk/blob/main/LICENSE)
 
 ## For AI coding agents
 
@@ -19,7 +19,7 @@ working on:
 
 - EvalShift CLI: <https://www.evalshift.dev/cli-llms-full.txt>
 - EvalShift SDK: <https://www.evalshift.dev/sdk-llms-full.txt>
-  (source of truth: [llms-full.txt](https://github.com/babaliauskas/evalshift-sdk/blob/main/llms-full.txt) in this repo)
+  (source of truth: [llms-full.txt](https://github.com/evalshift/evalshift-sdk/blob/main/llms-full.txt) in this repo)
 - EvalShift GitHub Action (CI): <https://www.evalshift.dev/ci-llms-full.txt>
 
 ## Install
@@ -68,8 +68,8 @@ from evalshift.adapters.openai import wrap_openai      # also: wrap_anthropic, w
 client = wrap_openai(OpenAI())                          # OpenAI(base_url=...) covers DeepSeek, Ollama, vLLM, Groq, ...
 ```
 
-> Full guide: [DOCS.md](https://github.com/babaliauskas/evalshift-sdk/blob/main/DOCS.md) · dense LLM reference: <https://www.evalshift.dev/sdk-llms-full.txt> ·
-> locked design decisions: [docs/DECISIONS.md](https://github.com/babaliauskas/evalshift-sdk/blob/main/docs/DECISIONS.md)
+> Full guide: [DOCS.md](https://github.com/evalshift/evalshift-sdk/blob/main/DOCS.md) · dense LLM reference: <https://www.evalshift.dev/sdk-llms-full.txt> ·
+> locked design decisions: [docs/DECISIONS.md](https://github.com/evalshift/evalshift-sdk/blob/main/docs/DECISIONS.md)
 
 ## Keeping `captures/` bounded
 
